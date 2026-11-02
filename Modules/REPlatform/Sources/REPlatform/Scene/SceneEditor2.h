@@ -88,6 +88,7 @@ public:
 
     void ClearAllCommands();
     const RECommandStack* GetCommandStack() const;
+    RECommandStack* GetCommandStack();
 
     template <typename... Args>
     void RemoveCommands()

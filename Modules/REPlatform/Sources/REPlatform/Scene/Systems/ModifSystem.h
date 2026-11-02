@@ -35,7 +35,7 @@ struct EntityToModify
 };
 
 Vector<EntityToModify> CreateEntityToModifyVector(SelectableGroup entities, Scene* scene);
-void ApplyModificationToScene(Scene* scene, const Vector<EntityToModify>& entities);
+void ApplyModificationToScene(Scene* scene, const Vector<EntityToModify>& entities, const char* batchName = "Multiple transform");
 
 class EntityModificationSystem : public SceneSystem, public SelectionSystemDelegate
 {

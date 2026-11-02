@@ -22,6 +22,15 @@ public:
 
     void Clear();
     void SetChanged();
+
+    // Read-only access to the stack state (list, position, save point).
+    int32 GetCurrentCommandIndex() const;
+    int32 GetCleanCommandIndex() const;
+    uint32 GetCommandCount() const;
+    const Command* GetCommand(uint32 index) const;
+    // Emitted when the stack is cleared or commands are removed from the
+    // middle of the stack. commandExecuted is not emitted in those cases.
+    Signal<> historyReset;
     template <typename... Args>
     void RemoveCommands();
 

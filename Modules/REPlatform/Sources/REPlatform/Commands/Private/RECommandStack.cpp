@@ -22,6 +22,7 @@ void RECommandStack::Clear()
     commands.clear();
     cleanIndex = EMPTY_INDEX;
     SetCurrentIndex(EMPTY_INDEX);
+    historyReset.Emit();
 }
 
 void RECommandStack::Exec(std::unique_ptr<Command>&& command)
@@ -76,6 +77,30 @@ void RECommandStack::SetChanged()
     forceChanged = true;
 }
 
+int32 RECommandStack::GetCurrentCommandIndex() const
+{
+    return currentIndex;
+}
+
+int32 RECommandStack::GetCleanCommandIndex() const
+{
+    return cleanIndex;
+}
+
+uint32 RECommandStack::GetCommandCount() const
+{
+    return static_cast<uint32>(commands.size());
+}
+
+const Command* RECommandStack::GetCommand(uint32 index) const
+{
+    if (index < commands.size())
+    {
+        return commands[index].get();
+    }
+    return nullptr;
+}
+
 CommandBatch* RECommandStack::CreateCommmandBatch(const String& name, uint32 commandsCount) const
 {
     return new RECommandBatch(name, commandsCount);
@@ -93,6 +118,7 @@ void RECommandStack::RemoveCommand(uint32 index)
     {
         SetCurrentIndex(currentIndex - 1);
     }
+    historyReset.Emit();
 }
 
 void RECommandStack::OnCommandExecuted(const Command* command, bool redo)

@@ -577,6 +577,11 @@ const RECommandStack* SceneEditor2::GetCommandStack() const
     return commandStack.get();
 }
 
+RECommandStack* SceneEditor2::GetCommandStack()
+{
+    return commandStack.get();
+}
+
 bool SceneEditor2::IsLoaded() const
 {
     return isLoaded;

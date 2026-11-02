@@ -112,7 +112,7 @@ Vector<EntityToModify> CreateEntityToModifyVector(SelectableGroup entities, Scen
     return modifEntities;
 }
 
-void ApplyModificationToScene(Scene* scene, const Vector<EntityToModify>& entities)
+void ApplyModificationToScene(Scene* scene, const Vector<EntityToModify>& entities, const char* batchName)
 {
     SceneEditor2* sceneEditor = static_cast<SceneEditor2*>(scene);
     bool transformChanged = false;
@@ -122,7 +122,7 @@ void ApplyModificationToScene(Scene* scene, const Vector<EntityToModify>& entiti
                          return entity.originalTransform != entity.object.GetLocalTransform();
                      }) != std::end(entities))
     {
-        sceneEditor->BeginBatch("Multiple transform", static_cast<uint32>(entities.size()));
+        sceneEditor->BeginBatch(batchName, static_cast<uint32>(entities.size()));
         for (const EntityToModify& entity : entities)
         {
             sceneEditor->Exec(std::make_unique<TransformCommand>(entity.object, entity.originalTransform, entity.object.GetLocalTransform()));
@@ -233,7 +233,7 @@ void EntityModificationSystem::ResetTransform(const SelectableGroup& entities)
         Matrix4 zeroTransform;
         zeroTransform.Identity();
 
-        sceneEditor->BeginBatch("Multiple transform", entities.GetSize());
+        sceneEditor->BeginBatch("Reset transform", entities.GetSize());
         for (const Selectable& item : entities.GetContent())
         {
             sceneEditor->Exec(std::unique_ptr<Command>(new TransformCommand(item, item.GetLocalTransform(), zeroTransform)));
@@ -545,7 +545,23 @@ void EntityModificationSystem::ApplyModification()
     if (sceneEditor == nullptr)
         return;
 
-    ApplyModificationToScene(sceneEditor, modifEntities);
+    // the actual gizmo operation instead of the generic "Multiple transform"
+    const char* batchName = "Multiple transform";
+    switch (transformType)
+    {
+    case Selectable::TransformType::Translation:
+        batchName = "Move";
+        break;
+    case Selectable::TransformType::Rotation:
+        batchName = "Rotate";
+        break;
+    case Selectable::TransformType::Scale:
+        batchName = "Scale";
+        break;
+    default:
+        break;
+    }
+    ApplyModificationToScene(sceneEditor, modifEntities, batchName);
 }
 
 Vector3 EntityModificationSystem::CamCursorPosToModifPos(Camera* camera, Vector2 pos)
