@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Reconstructed manifest: the original rendertool.xml was never published
+     with the dava.engine repository (no Git-LFS object exists for it).
+     Modeled on the published ernsttool.xml iltool format. -->
+<iltool version="1">
+    <tool id="61d447d6-03a7-4c35-8c38-ea25bdc458dc">
+        <impl osFamily="windows" bitness="64" minVersion="5.0.0" main="9b3ff48d-994e-4f7c-9c46-bdfdb0caee9b">
+            <file id="9b3ff48d-994e-4f7c-9c46-bdfdb0caee9b">
+                <![CDATA[rendertool-64.exe]]>
+</file>
+        </impl>
+        <impl osFamily="windows" bitness="32" minVersion="5.0.0" main="1eb84d3c-6042-4661-adb6-fb45c3d88702">
+            <file id="1eb84d3c-6042-4661-adb6-fb45c3d88702">
+                <![CDATA[rendertool-32.exe]]>
+</file>
+        </impl>
+    </tool>
+</iltool>
