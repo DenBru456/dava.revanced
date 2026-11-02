@@ -1,8 +1,8 @@
 #include "Classes/Qt/TextureBrowser/TextureListDelegate.h"
-#include "Classes/Qt/TextureBrowser/TextureListModel.h"
+#include "Classes/Qt/TextureBrowser/TextureBrowser.h"
 #include "Classes/Qt/TextureBrowser/TextureCache.h"
 #include "Classes/Qt/TextureBrowser/TextureConvertor.h"
-#include "Classes/Qt/TextureBrowser/TextureBrowser.h"
+#include "Classes/Qt/TextureBrowser/TextureListModel.h"
 
 #include <REPlatform/DataNodes/ProjectManagerData.h>
 #include <REPlatform/Scene/Utils/Preset.h>
@@ -16,15 +16,18 @@
 
 #include <Base/BaseTypes.h>
 
-#include <QPainter>
-#include <QFileInfo>
-#include <QEvent>
-#include <QMouseEvent>
-#include <QMenu>
-#include <QToolTip>
+#include <Render/Image/Image.h>
+#include <Render/PixelFormatDescriptor.h>
+
+#include "REPlatform/Scene/Utils/Utils.h"
 #include <QAbstractItemView>
 #include <QDesktopServices>
-#include "REPlatform/Scene/Utils/Utils.h"
+#include <QEvent>
+#include <QFileInfo>
+#include <QMenu>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QToolTip>
 
 #define TEXTURE_PREVIEW_SIZE 80
 #define TEXTURE_PREVIEW_SIZE_SMALL 24
@@ -39,7 +42,7 @@ namespace ActionIcon
 {
 QIcon loadPresetIcon;
 QIcon savePresetIcon;
-}
+} // namespace ActionIcon
 
 TextureListDelegate::TextureListDelegate(QObject* parent /* = 0 */)
     : QAbstractItemDelegate(parent)
@@ -116,7 +119,10 @@ void TextureListDelegate::drawPreviewBig(QPainter* painter, const QStyleOptionVi
     {
         DAVA::Texture* curTexture = curModel->getTexture(index);
 
-        QString textureName = QString::fromStdString(curTextureDescriptor->GetSourceTexturePathname().GetFilename());
+        // the row names the file that is really read, not the declared source
+        const DAVA::FilePath resolvedLabel = curTextureDescriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
+        const DAVA::FilePath labelPath = resolvedLabel.IsEmpty() ? curTextureDescriptor->GetSourceTexturePathname() : resolvedLabel;
+        QString textureName = QString::fromStdString(labelPath.GetFilename());
 
         painter->save();
         painter->setClipRect(option.rect);
@@ -231,21 +237,40 @@ QString TextureListDelegate::CreateInfoString(const QModelIndex& index) const
             QString infoText;
             char dimen[64];
 
-            QSize textureDimension;
-            if (curTexture->IsPinkPlaceholder())
+            // report the image on disk for this texture
+            const DAVA::FilePath resolved = curTextureDescriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
+
+            DAVA::ImageInfo imgInfo;
+            if (resolved.IsEmpty() == false)
             {
-                DAVA::ImageInfo imgInfo = DAVA::ImageSystem::GetImageInfo(curTextureDescriptor->GetSourceTexturePathname());
-                textureDimension = QSize(imgInfo.width, imgInfo.height);
+                imgInfo = DAVA::ImageSystem::GetImageInfo(resolved);
             }
-            else
+            if (imgInfo.width == 0 || imgInfo.height == 0)
             {
-                textureDimension = QSize(curTexture->width, curTexture->height);
+                if (curTexture->IsPinkPlaceholder() == false)
+                {
+                    imgInfo.width = curTexture->width;
+                    imgInfo.height = curTexture->height;
+                }
             }
 
-            sprintf(dimen, "Size: %dx%d", textureDimension.width(), textureDimension.height());
+            sprintf(dimen, "Size: %dx%d", imgInfo.width, imgInfo.height);
             infoText += dimen;
+
+            if (imgInfo.format != DAVA::FORMAT_INVALID)
+            {
+                infoText += "\nFormat: ";
+                infoText += DAVA::PixelFormatDescriptor::GetPixelFormatString(imgInfo.format);
+            }
+
             infoText += "\nData size: ";
-            infoText += QString::fromStdString(DAVA::SizeInBytesToString(TextureCache::Instance()->getThumbnailSize(curTextureDescriptor)));
+            infoText += QString::fromStdString(DAVA::SizeInBytesToString(DAVA::ImageUtils::GetSizeInBytes(imgInfo.width, imgInfo.height, imgInfo.format)));
+
+            if (resolved.IsEmpty() == false)
+            {
+                infoText += "\nFile size: ";
+                infoText += QString::fromStdString(DAVA::SizeInBytesToString(static_cast<DAVA::uint32>(QFileInfo(resolved.GetAbsolutePathname().c_str()).size())));
+            }
 
             DAVA::ProjectManagerData* data = DAVA::Deprecated::GetDataNode<DAVA::ProjectManagerData>();
             if (data)

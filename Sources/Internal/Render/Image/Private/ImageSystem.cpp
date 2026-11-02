@@ -44,7 +44,10 @@ const Array<std::unique_ptr<ImageFormatInterface>, ImageFormat::IMAGE_FORMAT_COU
 Image* LoadSingleMip(const FilePath& pathname, uint32 mip)
 {
     Vector<Image*> images;
-    ImageSystem::Load(pathname, images, LoadingParams(0, 0, mip, 0));
+    // single-mip CPU reads decompress block payloads to RGBA8888; the GPU path keeps the native format
+    LoadingParams cpuParams(0, 0, mip, 0);
+    cpuParams.targetFormat = FORMAT_RGBA8888;
+    ImageSystem::Load(pathname, images, cpuParams);
 
     Image* image = nullptr;
     if (images.empty() == false)

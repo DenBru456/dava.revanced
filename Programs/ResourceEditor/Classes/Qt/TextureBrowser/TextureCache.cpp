@@ -3,8 +3,8 @@
 
 #include <REPlatform/Scene/Utils/ImageTools.h>
 
-#include <QPainter>
 #include <QFileInfo>
+#include <QPainter>
 
 TextureCache::TextureCache()
 {
@@ -117,15 +117,17 @@ void TextureCache::tryToPreloadConverted(const DAVA::TextureDescriptor* descript
     QList<QImage> cachedValue = getConverted(descriptor, gpu);
     if (cachedValue.empty() && (nullptr != descriptor))
     {
-        if (descriptor->GetPixelFormatForGPU(gpu) == DAVA::PixelFormat::FORMAT_INVALID)
-        {
-            return;
-        }
+        // a family with no declared format can still have a readable file:
+        // export descriptors pin a single family
 
         TextureInfo convertedImageInfo;
         DAVA::Vector<DAVA::Image*> convertedImages;
 
-        DAVA::FilePath compressedTexturePath = descriptor->CreateMultiMipPathnameForGPU(gpu);
+        DAVA::FilePath compressedTexturePath = descriptor->GetExistingPathnameForGPU(gpu);
+        if (compressedTexturePath.IsEmpty())
+        { // nothing readable for this family: let the caller draw the placeholder
+            return;
+        }
         DAVA::eErrorCode ret = DAVA::ImageSystem::Load(compressedTexturePath, convertedImages);
         if (ret != DAVA::eErrorCode::SUCCESS || convertedImages.empty())
         { // we have no compressed file

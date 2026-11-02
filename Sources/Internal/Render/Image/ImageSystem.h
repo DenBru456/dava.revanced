@@ -26,6 +26,10 @@ struct LoadingParams
     uint32 minimalHeight = 0;
     uint32 baseMipmap = 0;
     uint32 firstMipmapIndex = 0;
+
+    // request an uncompressed CPU-readable result (RGBA8888): block compressed payloads are
+    // decompressed on load; FORMAT_INVALID keeps the file's native format
+    PixelFormat targetFormat = PixelFormat::FORMAT_INVALID;
 };
 
 Image* LoadSingleMip(const FilePath& pathname, uint32 mip = 0);

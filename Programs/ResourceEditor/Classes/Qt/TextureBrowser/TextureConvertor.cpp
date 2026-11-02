@@ -10,17 +10,17 @@
 
 #include <TextureCompression/TextureConverter.h>
 
-#include <Render/Image/LibDdsHelper.h>
 #include <FileSystem/FileSystem.h>
+#include <Render/Image/LibDdsHelper.h>
 
+#include <QFileInfo>
+#include <QImage>
+#include <QLabel>
 #include <QPainter>
 #include <QProcess>
-#include <QTextOption>
 #include <QPushButton>
-#include <QLabel>
-#include <QFileInfo>
+#include <QTextOption>
 #include <QtConcurrent>
-#include <QImage>
 
 TextureConvertor::TextureConvertor()
     : jobIdCounter(1)
@@ -344,9 +344,18 @@ TextureInfo TextureConvertor::GetThumbnailThread(const JobItem* item)
         }
         else
         {
-            QImage img = DAVA::ImageTools::FromDavaImage(descriptor->GetSourceTexturePathname());
+            // plain source if present, otherwise the best existing family variant
+            const DAVA::FilePath sourcePath = descriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
+            if (sourcePath.IsEmpty() || DAVA::FileSystem::Instance()->Exists(sourcePath) == false)
+            {
+                // nothing on disk for this texture: return no images,
+                // the caller draws its own missing placeholder
+                return result;
+            }
+
+            QImage img = DAVA::ImageTools::FromDavaImage(sourcePath);
             result.images.push_back(img);
-            fileSize = QFileInfo(descriptor->GetSourceTexturePathname().GetAbsolutePathname().c_str()).size();
+            fileSize = QFileInfo(sourcePath.GetAbsolutePathname().c_str()).size();
         }
 
         result.dataSize = DAVA::ImageTools::GetTexturePhysicalSize(descriptor, DAVA::GPU_ORIGIN);
@@ -383,9 +392,16 @@ TextureInfo TextureConvertor::GetOriginalThread(const JobItem* item)
         }
         else
         {
-            QImage img = DAVA::ImageTools::FromDavaImage(descriptor->GetSourceTexturePathname());
+            // plain source if present, otherwise the best existing family variant
+            const DAVA::FilePath sourcePath = descriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
+            if (sourcePath.IsEmpty() || DAVA::FileSystem::Instance()->Exists(sourcePath) == false)
+            {
+                return result;
+            }
+
+            QImage img = DAVA::ImageTools::FromDavaImage(sourcePath);
             result.images.push_back(img);
-            fileSize = QFileInfo(descriptor->GetSourceTexturePathname().GetAbsolutePathname().c_str()).size();
+            fileSize = QFileInfo(sourcePath.GetAbsolutePathname().c_str()).size();
         }
 
         result.dataSize = DAVA::ImageTools::GetTexturePhysicalSize(descriptor, DAVA::GPU_ORIGIN);
@@ -548,7 +564,7 @@ DAVA::Vector<DAVA::Image*> TextureConvertor::ConvertFormat(DAVA::TextureDescript
             }
             else
             {
-                //select images with mipmap level = 0 for cube map display
+                // select images with mipmap level = 0 for cube map display
                 for (size_t i = 0; i < davaImages.size(); ++i)
                 {
                     DAVA::Image* image = davaImages[i];

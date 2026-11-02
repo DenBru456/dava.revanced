@@ -1061,6 +1061,149 @@ bool DDSReaderImpl::GetCRC(uint32& crc) const
     }
 }
 
+
+static void DDSExpand565(uint16 c, uint8& r, uint8& g, uint8& b)
+{
+    const uint32 r5 = (c >> 11) & 0x1F;
+    const uint32 g6 = (c >> 5) & 0x3F;
+    const uint32 b5 = c & 0x1F;
+    r = static_cast<uint8>((r5 << 3) | (r5 >> 2));
+    g = static_cast<uint8>((g6 << 2) | (g6 >> 4));
+    b = static_cast<uint8>((b5 << 3) | (b5 >> 2));
+}
+
+static bool DDSIsBlockCompressedFormat(PixelFormat format)
+{
+    return (format == FORMAT_DXT1) || (format == FORMAT_DXT1A) ||
+    (format == FORMAT_DXT3) || (format == FORMAT_DXT5) || (format == FORMAT_DXT5NM);
+}
+
+static void DDSDecompressDxtToRgba(const uint8* src, uint32 width, uint32 height, PixelFormat srcFormat, uint8* dst)
+{
+    DVASSERT(src != nullptr);
+    DVASSERT(dst != nullptr);
+
+    const uint32 blocksX = (width + 3) / 4;
+    const uint32 blocksY = (height + 3) / 4;
+    const bool isBC1 = (srcFormat == FORMAT_DXT1) || (srcFormat == FORMAT_DXT1A);
+    const uint32 blockBytes = isBC1 ? 8 : 16;
+    const uint32 colorOffset = isBC1 ? 0 : 8;
+    const bool hasBC2Alpha = (srcFormat == FORMAT_DXT3);
+    const bool hasBC3Alpha = (srcFormat == FORMAT_DXT5) || (srcFormat == FORMAT_DXT5NM);
+
+    for (uint32 by = 0; by < blocksY; ++by)
+    {
+        for (uint32 bx = 0; bx < blocksX; ++bx)
+        {
+            const uint8* block = src + (static_cast<size_t>(by) * blocksX + bx) * blockBytes;
+
+            uint8 alphaRow[16];
+            if (hasBC2Alpha)
+            {
+                for (uint32 i = 0; i < 16; ++i)
+                {
+                    const uint8 nibble = (block[i / 2] >> ((i % 2) * 4)) & 0x0F;
+                    alphaRow[i] = static_cast<uint8>(nibble * 17);
+                }
+            }
+            else if (hasBC3Alpha)
+            {
+                const uint8 a0 = block[0];
+                const uint8 a1 = block[1];
+                uint64 indices = 0;
+                for (uint32 j = 0; j < 6; ++j)
+                {
+                    indices |= static_cast<uint64>(block[2 + j]) << (8 * j);
+                }
+                uint8 table[8];
+                if (a0 > a1)
+                {
+                    for (uint32 i = 0; i < 8; ++i)
+                    {
+                        table[i] = static_cast<uint8>((a0 * (7 - i) + a1 * i) / 7);
+                    }
+                }
+                else
+                {
+                    table[0] = a0;
+                    table[1] = a1;
+                    table[2] = static_cast<uint8>((4 * a0 + a1) / 5);
+                    table[3] = static_cast<uint8>((3 * a0 + 2 * a1) / 5);
+                    table[4] = static_cast<uint8>((2 * a0 + 3 * a1) / 5);
+                    table[5] = static_cast<uint8>((a0 + 4 * a1) / 5);
+                    table[6] = 0;
+                    table[7] = 255;
+                }
+
+                uint64 currentIndices = indices;
+                for (uint32 i = 0; i < 16; ++i)
+                {
+                    alphaRow[i] = table[currentIndices & 0x7];
+                    currentIndices >>= 3;
+                }
+            }
+            else
+            {
+                for (uint32 i = 0; i < 16; ++i)
+                {
+                    alphaRow[i] = 255;
+                }
+            }
+
+            const uint16 c0 = static_cast<uint16>(block[colorOffset] | (block[colorOffset + 1] << 8));
+            const uint16 c1 = static_cast<uint16>(block[colorOffset + 2] | (block[colorOffset + 3] << 8));
+            const uint32 colorIndices = static_cast<uint32>(block[colorOffset + 4]) |
+            (static_cast<uint32>(block[colorOffset + 5]) << 8) |
+            (static_cast<uint32>(block[colorOffset + 6]) << 16) |
+            (static_cast<uint32>(block[colorOffset + 7]) << 24);
+
+            uint8 r0 = 0, g0 = 0, b0 = 0, r1 = 0, g1 = 0, b1 = 0;
+            DDSExpand565(c0, r0, g0, b0);
+            DDSExpand565(c1, r1, g1, b1);
+
+            uint8 r[4] = { r0, r1, 0, 0 };
+            uint8 g[4] = { g0, g1, 0, 0 };
+            uint8 b[4] = { b0, b1, 0, 0 };
+            uint8 a[4] = { 255, 255, 255, 255 };
+            if (c0 > c1)
+            {
+                r[2] = static_cast<uint8>((2 * r0 + r1) / 3);
+                g[2] = static_cast<uint8>((2 * g0 + g1) / 3);
+                b[2] = static_cast<uint8>((2 * b0 + b1) / 3);
+                r[3] = static_cast<uint8>((r0 + 2 * r1) / 3);
+                g[3] = static_cast<uint8>((g0 + 2 * g1) / 3);
+                b[3] = static_cast<uint8>((b0 + 2 * b1) / 3);
+            }
+            else
+            {
+                r[2] = static_cast<uint8>((r0 + r1) / 2);
+                g[2] = static_cast<uint8>((g0 + g1) / 2);
+                b[2] = static_cast<uint8>((b0 + b1) / 2);
+                r[3] = 0;
+                g[3] = 0;
+                b[3] = 0;
+                a[3] = 0;
+            }
+
+            for (uint32 i = 0; i < 16; ++i)
+            {
+                const uint32 sel = (colorIndices >> (2 * i)) & 0x3;
+                const uint32 x = bx * 4 + (i & 3);
+                const uint32 y = by * 4 + (i >> 2);
+                if (x < width && y < height)
+                {
+                    uint8* px = dst + (static_cast<size_t>(y) * width + x) * 4;
+                    px[0] = r[sel];
+                    px[1] = g[sel];
+                    px[2] = b[sel];
+                    px[3] = isBC1 ? a[sel] : alphaRow[i];
+                }
+            }
+        }
+    }
+}
+
+
 bool DDSReaderImpl::GetImages(Vector<Image*>& images, const ImageSystem::LoadingParams& loadingParams)
 {
     ImageInfo info = GetImageInfo();
@@ -1124,16 +1267,29 @@ bool DDSReaderImpl::GetImages(Vector<Image*>& images, const ImageSystem::Loading
                 return false;
             }
 
-            Image* fetchedImage = Image::Create(mipWidth, mipHeight, info.format);
-            DVASSERT(fetchedImage);
+            const bool cpuWantsRgba = (loadingParams.targetFormat == FORMAT_RGBA8888) &&
+            (info.format != FORMAT_RGBA8888);
 
-            if (fileStoresTextureInD3DFormat)
+            Image* fetchedImage = nullptr;
+            if (cpuWantsRgba && (fileStoresTextureInD3DFormat == false) && DDSIsBlockCompressedFormat(info.format))
             {
-                D3DUtils::DirectConvertFromD3D(dataBuffer.data(), fetchedImage, d3dPixelFormat, davaPixelFormat);
+                fetchedImage = Image::Create(mipWidth, mipHeight, FORMAT_RGBA8888);
+                DVASSERT(fetchedImage);
+                DDSDecompressDxtToRgba(dataBuffer.data(), mipWidth, mipHeight, info.format, fetchedImage->data);
             }
             else
             {
-                Memcpy(fetchedImage->data, dataBuffer.data(), fetchedImage->dataSize);
+                fetchedImage = Image::Create(mipWidth, mipHeight, info.format);
+                DVASSERT(fetchedImage);
+
+                if (fileStoresTextureInD3DFormat)
+                {
+                    D3DUtils::DirectConvertFromD3D(dataBuffer.data(), fetchedImage, d3dPixelFormat, davaPixelFormat);
+                }
+                else
+                {
+                    Memcpy(fetchedImage->data, dataBuffer.data(), fetchedImage->dataSize);
+                }
             }
 
             fetchedImage->mipmapLevel = mip - baseMipMap + ddsLoadingParams.firstMipmapIndex;

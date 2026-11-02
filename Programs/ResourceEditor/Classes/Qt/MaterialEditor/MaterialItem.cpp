@@ -7,11 +7,13 @@
 #include <TArc/SharedModules/ThemesModule/ThemesModule.h>
 #include <TArc/Utils/Utils.h>
 
-#include <QSet>
-#include <QPainter>
-#include <QImage>
 #include <QDebug>
+#include <QIcon>
+#include <QImage>
+#include <QPainter>
 #include <QPalette>
+#include <QPixmap>
+#include <QSet>
 
 namespace MaterialItemLocal
 {
@@ -163,18 +165,53 @@ void MaterialItem::requestPreview()
     isPreviewRequested = true;
 
     DAVA::Texture* albedoTexture = material->GetEffectiveTexture(DAVA::NMaterialTextureName::TEXTURE_ALBEDO);
-    if (albedoTexture != nullptr)
+    if (albedoTexture == nullptr)
     {
-        DAVA::TextureDescriptor* descriptor = albedoTexture->GetDescriptor();
-        QVariant itemRef = QString(descriptor->pathname.GetAbsolutePathname().c_str());
-        TextureCache::Instance()->getThumbnail(descriptor, this, "onThumbnailReady", itemRef);
+        // no albedo: show the no-texture placeholder instead of an empty cell
+        applyNoTextureIcon();
+        return;
     }
+
+    DAVA::TextureDescriptor* descriptor = albedoTexture->GetDescriptor();
+    QVariant itemRef = QString(descriptor->pathname.GetAbsolutePathname().c_str());
+    TextureCache::Instance()->getThumbnail(descriptor, this, "onThumbnailReady", itemRef);
+}
+
+void MaterialItem::applyNoTextureIcon()
+{
+    static QIcon noTextureIcon = []()
+    {
+        const int side = 24;
+        QPixmap pix(side, side);
+        pix.fill(Qt::transparent);
+
+        QPainter painter(&pix);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        // neutral card reads as a missing image, not as a white texture
+        painter.setPen(QColor(85, 85, 85));
+        painter.setBrush(QColor(58, 58, 58));
+        painter.drawRoundedRect(QRectF(0.5, 0.5, side - 1.0, side - 1.0), 3.0, 3.0);
+
+        painter.setPen(QPen(QColor(190, 80, 80), 1.6));
+        painter.drawLine(QPointF(5.0, 5.0), QPointF(side - 5.0, side - 5.0));
+        painter.drawLine(QPointF(side - 5.0, 5.0), QPointF(5.0, side - 5.0));
+
+        return QIcon(pix);
+    }();
+
+    setIcon(noTextureIcon);
 }
 
 void MaterialItem::onThumbnailReady(const QList<QImage>& images, QVariant userData)
 {
-    if (images.empty())
+    if (images.empty() || images[0].isNull())
+    {
+        // no readable source for this descriptor: same placeholder,
+        // so an empty cell never looks like a white texture
+        applyNoTextureIcon();
         return;
+    }
 
     QImage firstImage = images[0];
     QPainter painter(&firstImage);

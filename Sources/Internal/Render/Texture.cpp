@@ -1,32 +1,31 @@
-#include "Render/RenderBase.h"
 #include "Render/Texture.h"
-#include "Utils/Utils.h"
-#include "Logger/Logger.h"
 #include "Debug/DVAssert.h"
-#include "Utils/Utils.h"
-#include "Render/Renderer.h"
-#include "Utils/StringFormat.h"
-#include "Time/SystemTimer.h"
 #include "FileSystem/File.h"
 #include "FileSystem/FileSystem.h"
-#include "Scene3D/Systems/QualitySettingsSystem.h"
+#include "Logger/Logger.h"
+#include "Render/RenderBase.h"
 #include "Render/RenderHelper.h"
+#include "Render/Renderer.h"
+#include "Scene3D/Systems/QualitySettingsSystem.h"
+#include "Time/SystemTimer.h"
+#include "Utils/StringFormat.h"
+#include "Utils/Utils.h"
 
 #if defined(__DAVAENGINE_IPHONE__)
-#include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
 #elif defined(__DAVAENGINE_MACOS__)
 #include <ApplicationServices/ApplicationServices.h>
-#endif //PLATFORMS
+#endif // PLATFORMS
 
 #include "Render/Image/Image.h"
-#include "Render/Image/ImageSystem.h"
 #include "Render/Image/ImageConvert.h"
+#include "Render/Image/ImageSystem.h"
 
-#include "Render/TextureDescriptor.h"
-#include "Render/GPUFamilyDescriptor.h"
-#include "Math/MathHelpers.h"
 #include "Concurrency/LockGuard.h"
+#include "Math/MathHelpers.h"
+#include "Render/GPUFamilyDescriptor.h"
+#include "Render/TextureDescriptor.h"
 
 #define DAVA_DEBUG_TEXTURE_DISABLE_LOADING 0
 
@@ -99,10 +98,10 @@ bool CheckAndFixImageFormat(Vector<Image*>* images)
     }
 
 #if defined(__DAVAENGINE_MACOS__) || defined(__DAVAENGINE_WIN32__) || defined(__DAVAENGINE_WIN_UAP__)
-    //we should decode all images for RE/QE
+    // we should decode all images for RE/QE
     if (ImageConvert::CanConvertFromTo(format, FORMAT_RGBA8888))
 #else
-    //We should decode only RGB888 into RGBA8888
+    // We should decode only RGB888 into RGBA8888
     if (format == PixelFormat::FORMAT_RGB888 && ImageConvert::CanConvertFromTo(format, FORMAT_RGBA8888))
 #endif
     {
@@ -130,17 +129,14 @@ bool CheckAndFixImageFormat(Vector<Image*>* images)
 
     return false;
 }
-}
+} // namespace Validator
 
-Array<String, Texture::CUBE_FACE_COUNT> Texture::FACE_NAME_SUFFIX =
-{ {
-String("_px"),
-String("_nx"),
-String("_py"),
-String("_ny"),
-String("_pz"),
-String("_nz")
-} };
+Array<String, Texture::CUBE_FACE_COUNT> Texture::FACE_NAME_SUFFIX = { { String("_px"),
+                                                                        String("_nx"),
+                                                                        String("_py"),
+                                                                        String("_ny"),
+                                                                        String("_pz"),
+                                                                        String("_nz") } };
 
 class TextureMemoryUsageInfo
 {
@@ -192,6 +188,7 @@ static TextureMemoryUsageInfo texMemoryUsageInfo;
 
 TexturesMap Texture::textureMap;
 Vector<eGPUFamily> Texture::gpuLoadingOrder;
+Vector<eGPUFamily> Texture::gpuFallbackOrder;
 
 Mutex Texture::textureMapMutex;
 
@@ -443,11 +440,9 @@ Texture* Texture::CreateFromImage(TextureDescriptor* descriptor, eGPUFamily gpu)
 
     if (!texture->singleTextureSet.IsValid())
     {
-        Logger::Error
-        (
+        Logger::Error(
         "[Texture::CreateFromImage] Cannot create rhi.texture from image. Descriptor: %s, GPU: %s",
-        descriptor->pathname.GetAbsolutePathname().c_str(), GlobalEnumMap<eGPUFamily>::Instance()->ToString(gpu)
-        );
+        descriptor->pathname.GetAbsolutePathname().c_str(), GlobalEnumMap<eGPUFamily>::Instance()->ToString(gpu));
         SafeRelease(texture);
         return nullptr;
     }
@@ -463,7 +458,10 @@ bool Texture::LoadImages(eGPUFamily gpu, Vector<Image*>* images)
 
     if (!IsLoadAvailable(gpu))
     {
-        Logger::Error("[Texture::LoadImages] Load not available: invalid requested GPU family (%s)", GlobalEnumMap<eGPUFamily>::Instance()->ToString(gpu));
+        // a family the texture does not carry is not an error
+        Logger::Warning("[Texture::LoadImages] no %s image for %s",
+                        GPUFamilyDescriptor::GetGPUName(gpu).c_str(),
+                        texDescriptor->pathname.GetAbsolutePathname().c_str());
         return false;
     }
 
@@ -501,7 +499,7 @@ bool Texture::LoadImages(eGPUFamily gpu, Vector<Image*>* images)
             faceImage[0]->cubeFaceID = i;
             faceImage[0]->mipmapLevel = 0;
 
-            //cubemap formats validation
+            // cubemap formats validation
             if (FORMAT_INVALID == imagesFormat)
             {
                 imagesFormat = faceImage[0]->format;
@@ -513,7 +511,7 @@ bool Texture::LoadImages(eGPUFamily gpu, Vector<Image*>* images)
                 ReleaseImages(images);
                 return false;
             }
-            //end of cubemap formats validation
+            // end of cubemap formats validation
 
             if (texDescriptor->GetGenerateMipMaps())
             {
@@ -547,8 +545,21 @@ bool Texture::LoadImages(eGPUFamily gpu, Vector<Image*>* images)
             params.baseMipmap = Max(static_cast<int32>(baseMipMap) - static_cast<int32>(singleMipFilesCount), 0);
         }
 
+        // read side: a file on disk for this family is used even when the descriptor declares nothing
         FilePath multipleMipPathname = texDescriptor->CreateMultiMipPathnameForGPU(gpu);
-        ImageSystem::Load(multipleMipPathname, *images, params);
+        if (multipleMipPathname.IsEmpty() || FileSystem::Instance()->Exists(multipleMipPathname) == false)
+        {
+            const FilePath resolved = texDescriptor->GetExistingPathnameForGPU(gpu);
+            if (resolved.IsEmpty() == false)
+            {
+                multipleMipPathname = resolved;
+            }
+        }
+
+        if (multipleMipPathname.IsEmpty() == false)
+        {
+            ImageSystem::Load(multipleMipPathname, *images, params);
+        }
 
         ImageSystem::EnsurePowerOf2Images(*images);
     }
@@ -620,7 +631,7 @@ void Texture::FlushDataToRenderer(Vector<Image*>* images)
     descriptor.format = formatDescriptor.format;
     descriptor.levelCount = static_cast<uint32>((descriptor.type == rhi::TEXTURE_TYPE_CUBE) ? images->size() / 6 : images->size());
 
-    const uint32 oldLevelCountVerify = descriptor.levelCount; //to notify about wrong images
+    const uint32 oldLevelCountVerify = descriptor.levelCount; // to notify about wrong images
     for (Image* img : (*images))
     { // kostil for some wrong data
         descriptor.levelCount = Max(descriptor.levelCount, img->mipmapLevel + 1);
@@ -630,7 +641,7 @@ void Texture::FlushDataToRenderer(Vector<Image*>* images)
         Logger::Error("Something wrong with image mipmap levels at %s", texDescriptor->pathname.GetStringValue().c_str());
     }
 
-    DVASSERT(descriptor.format != static_cast<rhi::TextureFormat>(-1)); //unsupported format
+    DVASSERT(descriptor.format != static_cast<rhi::TextureFormat>(-1)); // unsupported format
 
 #if 1
 
@@ -856,7 +867,8 @@ bool Texture::IsLoadAvailable(const eGPUFamily gpuFamily) const
 
     if (GPUFamilyDescriptor::IsGPUForDevice(gpuFamily) && texDescriptor->compression[gpuFamily].format == FORMAT_INVALID)
     {
-        return false;
+        // an empty table entry is not the same as no file: shipped data often carries only the family file
+        return texDescriptor->GetExistingPathnameForGPU(gpuFamily).IsEmpty() == false;
     }
 
     return true;
@@ -919,7 +931,7 @@ Texture* Texture::CreateFBO(const Texture::FBODescriptor& fboDesc)
         descriptor.cpuAccessWrite = false;
     }
 
-    DVASSERT(descriptor.format != static_cast<rhi::TextureFormat>(-1)); //unsupported format
+    DVASSERT(descriptor.format != static_cast<rhi::TextureFormat>(-1)); // unsupported format
     tx->handle = rhi::CreateTexture(descriptor);
 
     if (needDepth)
@@ -1137,6 +1149,16 @@ void Texture::SetGPULoadingOrder(const Vector<eGPUFamily>& gpuLoadingOrder_)
     gpuLoadingOrder = gpuLoadingOrder_;
 }
 
+void Texture::SetGPUFallbackOrder(const Vector<eGPUFamily>& order)
+{
+    gpuFallbackOrder = order;
+}
+
+const Vector<eGPUFamily>& Texture::GetGPUFallbackOrder()
+{
+    return gpuFallbackOrder;
+}
+
 const Vector<eGPUFamily>& Texture::GetGPULoadingOrder()
 {
     return gpuLoadingOrder;
@@ -1152,12 +1174,71 @@ eGPUFamily Texture::GetPrimaryGPUForLoading()
     return gpuLoadingOrder[0];
 }
 
+namespace
+{
+bool ReadableFor(const TextureDescriptor* descriptor, eGPUFamily gpu)
+{
+    if (GPUFamilyDescriptor::IsGPUForDevice(gpu) && descriptor->compression[gpu].format == FORMAT_INVALID)
+    {
+        return descriptor->GetExistingPathnameForGPU(gpu).IsEmpty() == false;
+    }
+
+    return true;
+}
+
+bool HasRuntimeFileForGPU(const TextureDescriptor* descriptor, eGPUFamily gpu)
+{
+    return descriptor->GetExistingPathnameForGPU(gpu).IsEmpty() == false;
+}
+} // namespace
+
 eGPUFamily Texture::GetGPUForLoading(const eGPUFamily requestedGPU, const TextureDescriptor* descriptor)
 {
-    if (descriptor->IsCompressedFile())
-        return descriptor->gpu;
+    // full descriptor: honour the request while that family can be read,
+    // else take a family that has a file
+    if (descriptor->IsCompressedFile() == false)
+    {
+        if (ReadableFor(descriptor, requestedGPU))
+        {
+            return requestedGPU;
+        }
 
-    return requestedGPU;
+        const Vector<eGPUFamily>& order = gpuFallbackOrder.empty() ? gpuLoadingOrder : gpuFallbackOrder;
+        for (eGPUFamily candidate : order)
+        {
+            if (ReadableFor(descriptor, candidate))
+            {
+                Logger::Warning("[Texture] %s has no %s image, using %s",
+                                descriptor->pathname.GetAbsolutePathname().c_str(),
+                                GPUFamilyDescriptor::GetGPUName(requestedGPU).c_str(),
+                                GPUFamilyDescriptor::GetGPUName(candidate).c_str());
+                return candidate;
+            }
+        }
+
+        return requestedGPU;
+    }
+
+    const eGPUFamily pinned = descriptor->gpu;
+    if (HasRuntimeFileForGPU(descriptor, pinned))
+    {
+        return pinned;
+    }
+
+    const Vector<eGPUFamily>& order = gpuFallbackOrder.empty() ? gpuLoadingOrder : gpuFallbackOrder;
+    for (eGPUFamily candidate : order)
+    {
+        if (HasRuntimeFileForGPU(descriptor, candidate))
+        {
+            Logger::Warning("[Texture] %s: no %s file, reading %s instead",
+                            descriptor->pathname.GetAbsolutePathname().c_str(),
+                            GPUFamilyDescriptor::GetGPUName(pinned).c_str(),
+                            GPUFamilyDescriptor::GetGPUName(candidate).c_str());
+            return candidate;
+        }
+    }
+
+    return pinned;
 }
 
 const FilePath& Texture::GetPathname() const
@@ -1208,7 +1289,7 @@ void Texture::SetPixelization(bool value)
         texture->SetMinMagFilter(minFilter, magFilter, mipFilter);
     }
     textureMapMutex.Unlock();
-    //RHI_COMPLETE
+    // RHI_COMPLETE
 }
 
 uint32 Texture::GetBaseMipMap() const
@@ -1235,4 +1316,4 @@ rhi::HSamplerState Texture::CreateSamplerStateHandle(const rhi::SamplerState::De
 
     return rhi::AcquireSamplerState(samplerDesc);
 }
-};
+}; // namespace DAVA

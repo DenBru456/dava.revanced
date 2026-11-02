@@ -39,7 +39,16 @@ QVariant TextureListModel::data(const QModelIndex& index, int role) const
         switch (role)
         {
         case Qt::DisplayRole:
+        {
+            // the file that is really read, not the declared source
+            const DAVA::FilePath resolved = curTextureDescriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
+            if (resolved.IsEmpty() == false)
+            {
+                return QVariant(QFileInfo(resolved.GetAbsolutePathname().c_str()).fileName());
+            }
+
             return QVariant(QFileInfo(curTextureDescriptor->GetSourceTexturePathname().GetAbsolutePathname().c_str()).fileName());
+        }
 
         default:
             break;
@@ -101,7 +110,7 @@ bool TextureListModel::isHighlited(const QModelIndex& index) const
 
 void TextureListModel::dataReady(const DAVA::TextureDescriptor* desc)
 {
-    int i = textureDescriptorsFiltredSorted.indexOf((DAVA::TextureDescriptor * const)desc);
+    int i = textureDescriptorsFiltredSorted.indexOf((DAVA::TextureDescriptor* const)desc);
     emit dataChanged(this->index(i), this->index(i));
 }
 

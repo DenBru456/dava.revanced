@@ -5,45 +5,42 @@
 #include <FileSystem/FileSystem.h>
 #include <Logger/Logger.h>
 #include <Platform/Process.h>
-#include <Render/TextureDescriptor.h>
 #include <Render/GPUFamilyDescriptor.h>
+#include <Render/Image/Image.h>
+#include <Render/Image/ImageConvert.h>
+#include <Render/Image/ImageSystem.h>
 #include <Render/Image/LibPVRHelper.h>
 #include <Render/Image/LibTgaHelper.h>
-#include <Render/Image/ImageSystem.h>
-#include <Render/Image/ImageConvert.h>
-#include <Render/Image/Image.h>
+#include <Render/TextureDescriptor.h>
 #include <Utils/StringFormat.h>
 
 namespace DAVA
 {
 static String CUBEMAP_TMP_DIR = "~doc:/ResourceEditor_Cubemap_Tmp/";
 
-static Array<String, Texture::CUBE_FACE_COUNT> PVRTOOL_FACE_SUFFIXES =
-{ {
-String("1"), //pz
-String("2"), //nz
-String("3"), //px
-String("4"), //nx
-String("5"), //pz
-String("6") //nz
+static Array<String, Texture::CUBE_FACE_COUNT> PVRTOOL_FACE_SUFFIXES = { {
+String("1"), // pz
+String("2"), // nz
+String("3"), // px
+String("4"), // nx
+String("5"), // pz
+String("6") // nz
 } };
 
-static DAVA::String PVR_QUALITY_SETTING[] =
-{
-  "pvrtcfastest",
-  "pvrtcfast",
-  "pvrtcnormal",
-  "pvrtchigh",
-  "pvrtcbest"
+static DAVA::String PVR_QUALITY_SETTING[] = {
+    "pvrtcfastest",
+    "pvrtcfast",
+    "pvrtcnormal",
+    "pvrtchigh",
+    "pvrtcbest"
 };
 
-static DAVA::String ETC_QUALITY_SETTING[] =
-{
-  "etcfast",
-  "etcfast",
-  "etcslow",
-  "etcfastperceptual",
-  "etcslowperceptual"
+static DAVA::String ETC_QUALITY_SETTING[] = {
+    "etcfast",
+    "etcfast",
+    "etcslow",
+    "etcfastperceptual",
+    "etcslowperceptual"
 };
 
 PVRConverter::PVRConverter()
@@ -132,7 +129,7 @@ Vector<Image*> ProcessFloatImageSet(Vector<Image*>& sourceImages, PixelFormat in
 FilePath PVRConverter::ConvertFloatTexture(const TextureDescriptor& descriptor, eGPUFamily gpuFamily, TextureConverter::eConvertQuality quality, const ImageInfo& sourceInfo, const FilePath& outFolder)
 {
     Vector<Image*> sourceImages;
-    ImageSystem::Load(descriptor.GetSourceTexturePathname(), sourceImages);
+    ImageSystem::Load(descriptor.GetExistingPathnameForGPU(GPU_ORIGIN), sourceImages);
     if (sourceImages.empty())
     {
         Logger::Error("Failed to convert float texture to PVR file. Failed to load source image");
@@ -206,7 +203,7 @@ FilePath PVRConverter::ConvertToPvr(const TextureDescriptor& descriptor, eGPUFam
     return FilePath();
 
 #else
-    FilePath inputPathname = descriptor.GetSourceTexturePathname();
+    FilePath inputPathname = descriptor.GetExistingPathnameForGPU(GPU_ORIGIN);
     if (descriptor.IsCubeMap())
     {
         inputPathname = PrepareCubeMapForPvrConvert(descriptor);
@@ -271,7 +268,7 @@ FilePath PVRConverter::ConvertToPvr(const TextureDescriptor& descriptor, eGPUFam
 
 FilePath PVRConverter::ConvertNormalMapToPvr(const TextureDescriptor& descriptor, eGPUFamily gpuFamily, TextureConverter::eConvertQuality quality, const FilePath& outFolder)
 {
-    FilePath sourcePath = descriptor.GetSourceTexturePathname();
+    FilePath sourcePath = descriptor.GetExistingPathnameForGPU(GPU_ORIGIN);
 
     ScopedPtr<Image> image(ImageSystem::LoadSingleMip(sourcePath));
 
@@ -315,6 +312,7 @@ FilePath PVRConverter::ConvertNormalMapToPvr(const TextureDescriptor& descriptor
     tempFileDescriptor.compression[eGPUFamily::GPU_ORIGIN].format = image->format;
     tempFileDescriptor.compression[eGPUFamily::GPU_ORIGIN].imageFormat = targetFormat;
 
+    // write target for a temporary file: must stay the declared path
     FilePath tempSourcePath = tempFileDescriptor.GetSourceTexturePathname();
     FilePath tempConvertedPath = GetConvertedTexturePath(tempFileDescriptor, gpuFamily, outFolder);
     SCOPE_EXIT
@@ -422,7 +420,7 @@ void PVRConverter::GetToolCommandLine(const TextureDescriptor& descriptor, const
         }
     }
 
-    //quality
+    // quality
     args.push_back("-q");
     if (FORMAT_ETC1 == descriptor.compression[gpuFamily].format)
     {
@@ -455,7 +453,7 @@ void PVRConverter::GetToolCommandLine(const TextureDescriptor& descriptor, const
         args.push_back(Format("%d,%d", compression->compressToWidth, compression->compressToHeight));
     }
 
-    //args.push_back("-l"); //Alpha Bleed: Discards any data in fully transparent areas to optimise the texture for better compression.
+    // args.push_back("-l"); //Alpha Bleed: Discards any data in fully transparent areas to optimise the texture for better compression.
 }
 
 FilePath PVRConverter::GetConvertedTexturePath(const TextureDescriptor& descriptor, eGPUFamily gpuFamily, const FilePath& outFolder)
@@ -498,7 +496,7 @@ FilePath PVRConverter::PrepareCubeMapForPvrConvert(const TextureDescriptor& desc
 
     for (size_t i = 0; i < pvrToolFaceNames.size(); ++i)
     {
-        //cleanup in case previous cleanup failed
+        // cleanup in case previous cleanup failed
         if (FileSystem::Instance()->IsFile(pvrToolFaceNames[i]))
         {
             FileSystem::Instance()->DeleteFile(pvrToolFaceNames[i]);
@@ -552,4 +550,4 @@ DAVA::String PVRConverter::GenerateInputName(const TextureDescriptor& descriptor
 
     return fileToConvert.GetAbsolutePathname();
 }
-};
+}; // namespace DAVA

@@ -1,16 +1,22 @@
+#include "Render/TextureDescriptor.h"
+#include "FileSystem/DynamicMemoryFile.h"
 #include "FileSystem/File.h"
 #include "FileSystem/FileSystem.h"
-#include "FileSystem/DynamicMemoryFile.h"
 #include "FileSystem/KeyedArchive.h"
 #include "Logger/Logger.h"
-#include "Render/TextureDescriptor.h"
+#include "Render/Texture.h"
+#include <algorithm>
+
+#if defined(__DAVAENGINE_WIN32__)
+#include <sys/stat.h>
+#endif
 #include "Render/GPUFamilyDescriptor.h"
 #include "Render/Image/ImageSystem.h"
-#include "Render/Image/LibPVRHelper.h"
 #include "Render/Image/LibDdsHelper.h"
-#include "Utils/Utils.h"
+#include "Render/Image/LibPVRHelper.h"
 #include "Utils/CRC32.h"
 #include "Utils/StringFormat.h"
+#include "Utils/Utils.h"
 
 namespace DAVA
 {
@@ -53,27 +59,27 @@ DAVA_DEPRECATED(void ConvertV10orLessToV11(TextureDescriptor& descriptor))
     case 0:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_NEAREST;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_NONE;
-        break; //FILTER_NEAREST
+        break; // FILTER_NEAREST
     case 1:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_LINEAR;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_NONE;
-        break; //FILTER_LINEAR
+        break; // FILTER_LINEAR
     case 2:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_NEAREST;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_NEAREST;
-        break; //FILTER_NEAREST_MIPMAP_NEAREST
+        break; // FILTER_NEAREST_MIPMAP_NEAREST
     case 3:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_LINEAR;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_NEAREST;
-        break; //FILTER_LINEAR_MIPMAP_NEAREST
+        break; // FILTER_LINEAR_MIPMAP_NEAREST
     case 4:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_NEAREST;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_LINEAR;
-        break; //FILTER_NEAREST_MIPMAP_LINEAR
+        break; // FILTER_NEAREST_MIPMAP_LINEAR
     case 5:
         descriptor.drawSettings.minFilter = rhi::TEXFILTER_LINEAR;
         descriptor.drawSettings.mipFilter = rhi::TEXMIPFILTER_LINEAR;
-        break; //FILTER_LINEAR_MIPMAP_LINEAR
+        break; // FILTER_LINEAR_MIPMAP_LINEAR
     default:
         break;
     }
@@ -103,7 +109,7 @@ DAVA_DEPRECATED(void FillImageContainerFromFormat(TextureDescriptor& descriptor)
         descriptor.imageFormat = descriptor.dataSettings.sourceFileFormat;
     }
 }
-}
+} // namespace Validator
 
 namespace TextureDescriptorLocal
 {
@@ -118,7 +124,58 @@ FilePath CreateCompressedTexturePathname(const FilePath& pathname, eGPUFamily gp
     String postfix = GetPostfix(gpuFamily, imageFormat);
     return FilePath::CreateWithNewExtension(pathname, postfix);
 }
+} // namespace TextureDescriptorLocal
+
+namespace TextureDescriptorFallback
+{
+// last write time in seconds since epoch, 0 when it cannot be read
+int64 WriteTimeTicks(const FilePath& path)
+{
+#if defined(__DAVAENGINE_WIN32__)
+    struct _stat64 info;
+    if (_stat64(path.GetAbsolutePathname().c_str(), &info) == 0)
+    {
+        return static_cast<int64>(info.st_mtime);
+    }
+#endif
+    return 0;
 }
+// a descriptor may point at real images only; the .tex itself is not an image
+bool IsReadableImagePathname(const FilePath& path)
+{
+    if (path.IsEmpty())
+    {
+        return false;
+    }
+
+    const String extension = path.GetExtension();
+    if (extension.empty())
+    {
+        return false;
+    }
+
+    for (ImageFormat format : TextureDescriptor::sourceTextureTypes)
+    {
+        for (const String& known : ImageSystem::GetExtensionsFor(format))
+        {
+            if (known == extension)
+            {
+                return true;
+            }
+        }
+    }
+
+    for (const String& known : ImageSystem::GetExtensionsFor(IMAGE_FORMAT_PVR))
+    {
+        if (known == extension)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // namespace TextureDescriptorFallback
 
 //================   TextureDrawSettings  ===================
 void TextureDescriptor::TextureDrawSettings::SetDefaultValues()
@@ -273,7 +330,7 @@ bool TextureDescriptor::IsCompressedTextureActual(eGPUFamily forGPU) const
     const bool crcIsEqual = ((compressionForGPU->sourceFileCrc == sourceCRC) && (compressionForGPU->convertedFileCrc == convertedCRC)) && (convertedCRC != 0);
     if (crcIsEqual)
     {
-        //this code need until using of convertation params in crc
+        // this code need until using of convertation params in crc
         const ImageFormat imageFormat = GetImageFormatForGPU(forGPU);
         if (imageFormat == ImageFormat::IMAGE_FORMAT_UNKNOWN)
         {
@@ -383,9 +440,9 @@ bool TextureDescriptor::Load(const FilePath& filePathname)
     }
     }
 
-    { //validation & correction
+    { // validation & correction
         if (version < 10)
-        { //10 is version of adding of DX11 GPU
+        { // 10 is version of adding of DX11 GPU
             Validator::CopyDX11CompressionFormat(*this);
         }
         Validator::FixDX11CompressionFormat(*this);
@@ -464,7 +521,7 @@ String ReadStringDeprecated(File* file)
     file->Read(extStr.data(), length);
     return String(extStr.data(), length);
 }
-}
+} // namespace DescriptorFileOperation
 
 void TextureDescriptor::OverridePathName(const FilePath& filename)
 {
@@ -479,14 +536,14 @@ void TextureDescriptor::SaveInternal(File* file, const int32 signature, const eG
     int8 version = CURRENT_VERSION;
     file->Write(&version);
 
-    //draw settings
+    // draw settings
     file->Write(&drawSettings.wrapModeS);
     file->Write(&drawSettings.wrapModeT);
     file->Write(&drawSettings.minFilter);
     file->Write(&drawSettings.magFilter);
     file->Write(&drawSettings.mipFilter);
 
-    //data settings
+    // data settings
     file->Write(&dataSettings.textureFlags);
     file->Write(&dataSettings.cubefaceFlags);
     file->Write(&dataSettings.sourceFileFormat);
@@ -500,7 +557,7 @@ void TextureDescriptor::SaveInternal(File* file, const int32 signature, const eG
         }
     }
 
-    //compressions
+    // compressions
     if (forGPU == GPU_FAMILY_COUNT)
     { // save internal data for compression
         uint8 compressionCount = GPU_FAMILY_COUNT;
@@ -511,7 +568,7 @@ void TextureDescriptor::SaveInternal(File* file, const int32 signature, const eG
         }
     }
     else if (forGPU != GPU_INVALID)
-    { //export
+    { // export
         uint8 compressionCount = 0;
         file->Write(&compressionCount);
 
@@ -699,7 +756,7 @@ uint32 TextureDescriptor::ReadSourceCRC_V8_or_less() const
 
 void TextureDescriptor::LoadVersion9(File* file)
 {
-    //draw settings
+    // draw settings
     file->Read(&drawSettings.wrapModeS);
     file->Read(&drawSettings.wrapModeT);
     file->Read(&drawSettings.minFilter);
@@ -707,7 +764,7 @@ void TextureDescriptor::LoadVersion9(File* file)
 
     Validator::ConvertV10orLessToV11(*this);
 
-    //data settings
+    // data settings
     file->Read(&dataSettings.textureFlags);
     file->Read(&dataSettings.cubefaceFlags);
 
@@ -723,7 +780,7 @@ void TextureDescriptor::LoadVersion9(File* file)
         }
     }
 
-    //compression
+    // compression
     uint8 compressionsCount = 0;
     file->Read(&compressionsCount);
     for (uint8 i = 0; i < compressionsCount; ++i)
@@ -740,7 +797,7 @@ void TextureDescriptor::LoadVersion9(File* file)
         file->Read(&nextCompression.convertedFileCrc);
     }
 
-    //export data
+    // export data
     int8 exportedAsGpuFamily = GPU_INVALID;
     file->Read(&exportedAsGpuFamily);
     gpu = GPUFamilyDescriptor::ConvertValueToGPU(exportedAsGpuFamily);
@@ -758,14 +815,14 @@ void TextureDescriptor::LoadVersion10(File* file)
 
 void TextureDescriptor::LoadVersion11(File* file)
 {
-    //draw settings
+    // draw settings
     file->Read(&drawSettings.wrapModeS);
     file->Read(&drawSettings.wrapModeT);
     file->Read(&drawSettings.minFilter);
     file->Read(&drawSettings.magFilter);
     file->Read(&drawSettings.mipFilter);
 
-    //data settings
+    // data settings
     file->Read(&dataSettings.textureFlags);
     file->Read(&dataSettings.cubefaceFlags);
 
@@ -782,7 +839,7 @@ void TextureDescriptor::LoadVersion11(File* file)
         }
     }
 
-    //compression
+    // compression
     uint8 compressionsCount = 0;
     file->Read(&compressionsCount);
     for (uint8 i = 0; i < compressionsCount; ++i)
@@ -799,7 +856,7 @@ void TextureDescriptor::LoadVersion11(File* file)
         file->Read(&nextCompression.convertedFileCrc);
     }
 
-    //export data
+    // export data
     int8 exportedAsGpuFamily = GPU_INVALID;
     file->Read(&exportedAsGpuFamily);
     gpu = GPUFamilyDescriptor::ConvertValueToGPU(exportedAsGpuFamily);
@@ -811,14 +868,14 @@ void TextureDescriptor::LoadVersion11(File* file)
 
 void TextureDescriptor::LoadVersion12(File* file)
 {
-    //draw settings
+    // draw settings
     file->Read(&drawSettings.wrapModeS);
     file->Read(&drawSettings.wrapModeT);
     file->Read(&drawSettings.minFilter);
     file->Read(&drawSettings.magFilter);
     file->Read(&drawSettings.mipFilter);
 
-    //data settings
+    // data settings
     file->Read(&dataSettings.textureFlags);
     file->Read(&dataSettings.cubefaceFlags);
 
@@ -836,7 +893,7 @@ void TextureDescriptor::LoadVersion12(File* file)
         }
     }
 
-    //compression
+    // compression
     uint8 compressionsCount = 0;
     file->Read(&compressionsCount);
     if (compressionsCount == eGPUFamily::GPU_FAMILY_COUNT)
@@ -848,7 +905,7 @@ void TextureDescriptor::LoadVersion12(File* file)
     }
     else
     {
-        //export data
+        // export data
         uint8 exportedAsGpu = eGPUFamily::GPU_INVALID;
         uint8 exportedAsContainer = ImageFormat::IMAGE_FORMAT_UNKNOWN;
         uint8 exportedAsFormat = PixelFormat::FORMAT_INVALID;
@@ -875,6 +932,170 @@ FilePath TextureDescriptor::GetSourceTexturePathname() const
     }
 
     return FilePath::CreateWithNewExtension(pathname, dataSettings.sourceFileExtension);
+}
+
+// file that exists and can be read as an image for the requested family;
+// nothing is generated, the descriptor's own paths come first
+FilePath TextureDescriptor::GetExistingPathnameForGPU(eGPUFamily gpu) const
+{
+    if (pathname.IsEmpty())
+    {
+        return FilePath();
+    }
+
+    FileSystem* fs = FileSystem::Instance();
+    const auto usable = [this, fs](const FilePath& path)
+    {
+        if (TextureDescriptorFallback::IsReadableImagePathname(path) == false ||
+            path == pathname ||
+            fs->Exists(path) == false ||
+            fs->IsFile(path) == false)
+        {
+            return false;
+        }
+
+        // extension alone proves nothing: some .dds files are PVR payloads; require a readable header
+        return ImageSystem::GetImageInfo(path).width != 0;
+    };
+
+    // path built here: CreateMultiMipPathnameForGPU calls back into this function
+    // when the table has no entry
+    const auto declaredFor = [this](eGPUFamily family) -> FilePath
+    {
+        if (family == GPU_ORIGIN)
+        {
+            return GetSourceTexturePathname();
+        }
+
+        if (GPUFamilyDescriptor::IsGPUForDevice(family) == false)
+        {
+            return FilePath();
+        }
+
+        const ImageFormat format = GetImageFormatForGPU(family);
+        if (format == IMAGE_FORMAT_UNKNOWN)
+        {
+            return FilePath();
+        }
+
+        const String postfix = GPUFamilyDescriptor::GetGPUPrefix(family) + ImageSystem::GetDefaultExtension(format);
+        return FilePath::CreateWithNewExtension(pathname, postfix);
+    };
+
+    const FilePath requested = declaredFor(gpu);
+    if (usable(requested))
+    {
+        return requested;
+    }
+
+    const Vector<eGPUFamily>& listed = Texture::GetGPUFallbackOrder();
+    Vector<eGPUFamily> order(listed.begin(), listed.end());
+
+    // an empty order reduces the search to the plain source and hides every family file on disk
+    const bool hasDeviceFamily = std::any_of(order.begin(), order.end(), [](eGPUFamily f)
+                                             { return GPUFamilyDescriptor::IsGPUForDevice(f); });
+    if (hasDeviceFamily == false)
+    {
+        order.clear();
+        order.push_back(GPU_DX11);
+        for (int32 i = 0; i < GPU_DEVICE_COUNT; ++i)
+        {
+            const eGPUFamily family = static_cast<eGPUFamily>(i);
+            if (family != GPU_DX11)
+            {
+                order.push_back(family);
+            }
+        }
+    }
+
+    if (std::find(order.begin(), order.end(), gpu) == order.end())
+    {
+        order.insert(order.begin(), gpu);
+    }
+    if (std::find(order.begin(), order.end(), GPU_ORIGIN) == order.end())
+    {
+        order.push_back(GPU_ORIGIN);
+    }
+
+    for (eGPUFamily family : order)
+    {
+        const FilePath path = declaredFor(family);
+        if (usable(path))
+        {
+            return path;
+        }
+    }
+
+    for (eGPUFamily family : order)
+    {
+        if (family == GPU_ORIGIN)
+        {
+            continue;
+        }
+
+        const String prefix = GPUFamilyDescriptor::GetGPUPrefix(family);
+        if (prefix.empty())
+        {
+            continue;
+        }
+
+        Vector<String> containers;
+        const ImageFormat declaredFormat = GetImageFormatForGPU(family);
+        if (declaredFormat != IMAGE_FORMAT_UNKNOWN)
+        {
+            containers.push_back(ImageSystem::GetDefaultExtension(declaredFormat));
+        }
+        for (const String& guess : { ".pvr", ".dds", ".webp", ".png" })
+        {
+            if (std::find(containers.begin(), containers.end(), guess) == containers.end())
+            {
+                containers.push_back(guess);
+            }
+        }
+
+        Vector<FilePath> found;
+        for (const String& container : containers)
+        {
+            const FilePath dotted = FilePath::CreateWithNewExtension(pathname, prefix + container);
+            if (usable(dotted))
+            {
+                found.push_back(dotted);
+            }
+
+            const FilePath flat = FilePath::CreateWithNewExtension(pathname, String(prefix.c_str() + (prefix[0] == '.' ? 1 : 0)) + container);
+            if (flat != dotted && usable(flat))
+            {
+                found.push_back(flat);
+            }
+        }
+
+        if (found.empty())
+        {
+            continue;
+        }
+
+        if (timePriority == 0 || found.size() == 1)
+        {
+            return found[0]; // fixed container order
+        }
+
+        FilePath chosen = found[0];
+        int64 chosenTime = TextureDescriptorFallback::WriteTimeTicks(chosen);
+        for (size_t i = 1; i < found.size(); ++i)
+        {
+            const int64 candidateTime = TextureDescriptorFallback::WriteTimeTicks(found[i]);
+            const bool better = (timePriority == 2) ? (candidateTime > chosenTime) : (candidateTime < chosenTime);
+            if (better)
+            {
+                chosen = found[i];
+                chosenTime = candidateTime;
+            }
+        }
+
+        return chosen;
+    }
+
+    return FilePath();
 }
 
 const String& TextureDescriptor::GetFaceExtension(uint32 face) const
@@ -938,6 +1159,26 @@ const TextureDescriptor::Compression* TextureDescriptor::GetCompressionParams(eG
 {
     DVASSERT(gpuFamily >= 0 && gpuFamily < GPU_FAMILY_COUNT);
     return &compression[gpuFamily];
+}
+
+int32 TextureDescriptor::timePriority = 0;
+
+void TextureDescriptor::SetTimePriority(int32 value)
+{
+    if (value < 0)
+    {
+        value = 0;
+    }
+    else if (value > 2)
+    {
+        value = 2;
+    }
+    timePriority = value;
+}
+
+int32 TextureDescriptor::GetTimePriority()
+{
+    return timePriority;
 }
 
 Array<ImageFormat, 6> TextureDescriptor::sourceTextureTypes = { { IMAGE_FORMAT_PNG, IMAGE_FORMAT_TGA, IMAGE_FORMAT_JPEG, IMAGE_FORMAT_DDS, IMAGE_FORMAT_WEBP, IMAGE_FORMAT_HDR } };
@@ -1215,9 +1456,9 @@ bool TextureDescriptor::Reload()
 uint32 TextureDescriptor::GenerateDescriptorCRC(eGPUFamily forGPU) const
 {
     static const uint32 CRC_BUFFER_SIZE = 16;
-    static const uint8 CRC_BUFFER_VALUE = 0x3F; //to create nonzero buffer
+    static const uint8 CRC_BUFFER_VALUE = 0x3F; // to create nonzero buffer
 
-    Array<uint8, CRC_BUFFER_SIZE> crcBuffer; //this buffer need to calculate correct CRC of texture descriptor. I plan to fill this buffer with params that are important for compression of textures sush as textureFlags
+    Array<uint8, CRC_BUFFER_SIZE> crcBuffer; // this buffer need to calculate correct CRC of texture descriptor. I plan to fill this buffer with params that are important for compression of textures sush as textureFlags
     Memset(crcBuffer.data(), CRC_BUFFER_VALUE, crcBuffer.size());
 
     uint8* bufferPtr = crcBuffer.data();
@@ -1302,11 +1543,7 @@ bool TextureDescriptor::DeserializeFromPreset(const KeyedArchive* presetArchive)
             int32 compressToWidth = compressionArchive->GetInt32("width");
             int32 compressToHeight = compressionArchive->GetInt32("height");
 
-            if (formatAsInt != compressionGPU.format
-                || compressToWidth != compressionGPU.compressToWidth
-                || compressToHeight != compressionGPU.compressToHeight
-                || imageFormatAsInt != compressionGPU.imageFormat
-                )
+            if (formatAsInt != compressionGPU.format || compressToWidth != compressionGPU.compressToWidth || compressToHeight != compressionGPU.compressToHeight || imageFormatAsInt != compressionGPU.imageFormat)
             {
                 compressionGPU.imageFormat = imageFormatAsInt;
                 compressionGPU.format = formatAsInt;
@@ -1363,4 +1600,4 @@ bool TextureDescriptor::SerializeToPreset(KeyedArchive* presetArchive) const
 
     return true;
 }
-};
+}; // namespace DAVA

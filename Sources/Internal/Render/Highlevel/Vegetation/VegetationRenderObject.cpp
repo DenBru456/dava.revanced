@@ -1,25 +1,26 @@
 #include <cfloat>
 
+#include "Job/JobManager.h"
+#include "Render/GPUFamilyDescriptor.h"
 #include "Render/Highlevel/Vegetation/VegetationRenderObject.h"
-#include "Render/Material/NMaterialNames.h"
-#include "Render/Material/NMaterial.h"
-#include "Utils/Random.h"
-#include "Utils/StringFormat.h"
 #include "Render/Image/ImageSystem.h"
-#include "Scene3D/Systems/QualitySettingsSystem.h"
-#include "Scene3D/Systems/FoliageSystem.h"
+#include "Render/Material/NMaterial.h"
+#include "Render/Material/NMaterialNames.h"
 #include "Render/RenderHelper.h"
 #include "Render/TextureDescriptor.h"
+#include "Scene3D/Systems/FoliageSystem.h"
+#include "Scene3D/Systems/QualitySettingsSystem.h"
 #include "Time/SystemTimer.h"
-#include "Job/JobManager.h"
+#include "Utils/Random.h"
+#include "Utils/StringFormat.h"
 
-#include "Render/Highlevel/Vegetation/VegetationGeometry.h"
 #include "Render/Highlevel/RenderPassNames.h"
+#include "Render/Highlevel/Vegetation/VegetationGeometry.h"
 #include "Render/Renderer.h"
 
-#include "Reflection/ReflectionRegistrator.h"
-#include "Reflection/ReflectedMeta.h"
 #include "FileSystem/FileSystem.h"
+#include "Reflection/ReflectedMeta.h"
+#include "Reflection/ReflectionRegistrator.h"
 
 #include "Logger/Logger.h"
 
@@ -45,58 +46,53 @@ DAVA_VIRTUAL_REFLECTION_IMPL(VegetationRenderObject)
 
 static const uint32 MAX_CLUSTER_TYPES = 4;
 static const uint32 MAX_DENSITY_LEVELS = 16;
-//static const float32 CLUSTER_SCALE_NORMALIZATION_VALUE = 15.0f;
+// static const float32 CLUSTER_SCALE_NORMALIZATION_VALUE = 15.0f;
 
 static const size_t MAX_RENDER_CELLS = 512;
-static const float32 MAX_VISIBLE_CLIPPING_DISTANCE = 50.0f * 50.0f; //meters * meters (square length)
+static const float32 MAX_VISIBLE_CLIPPING_DISTANCE = 50.0f * 50.0f; // meters * meters (square length)
 static const float32 MAX_VISIBLE_SCALING_DISTANCE = 40.0f * 40.0f;
 
 static const uint32 DENSITY_MAP_SIZE = 128;
 static const float32 DENSITY_THRESHOLD = 0.0f;
 
-//static const float32 MAX_VISIBLE_CLIPPING_DISTANCE = 130.0f * 130.0f; //meters * meters (square length)
-//static const float32 MAX_VISIBLE_SCALING_DISTANCE = 100.0f * 100.0f;
+// static const float32 MAX_VISIBLE_CLIPPING_DISTANCE = 130.0f * 130.0f; //meters * meters (square length)
+// static const float32 MAX_VISIBLE_SCALING_DISTANCE = 100.0f * 100.0f;
 
-//static const uint32 FULL_BRUSH_VALUE = 0xFFFFFFFF;
+// static const uint32 FULL_BRUSH_VALUE = 0xFFFFFFFF;
 
 static Vector3 LOD_RANGES_SCALE = Vector3(0.0f, 2.0f, 6.0f);
-//static Vector3 LOD_RANGES_SCALE = Vector3(0.0f, 2.0f, 6.0f);
+// static Vector3 LOD_RANGES_SCALE = Vector3(0.0f, 2.0f, 6.0f);
 
-static Vector<float32> RESOLUTION_SCALE =
-{
-  1.0f,
-  2.0f,
-  4.0f,
+static Vector<float32> RESOLUTION_SCALE = {
+    1.0f,
+    2.0f,
+    4.0f,
 };
 
-static Vector<uint32> RESOLUTION_CELL_SQUARE =
-{
-  1,
-  4,
-  16
+static Vector<uint32> RESOLUTION_CELL_SQUARE = {
+    1,
+    4,
+    16
 };
 
-static Vector<uint32> RESOLUTION_TILES_PER_ROW =
-{
-  4,
-  2,
-  1
+static Vector<uint32> RESOLUTION_TILES_PER_ROW = {
+    4,
+    2,
+    1
 };
 
-static Vector<uint32> RESOLUTION_CLUSTER_STRIDE =
-{
-  1,
-  2,
-  4
+static Vector<uint32> RESOLUTION_CLUSTER_STRIDE = {
+    1,
+    2,
+    4
 };
 
-//#define VEGETATION_DRAW_LOD_COLOR
+// #define VEGETATION_DRAW_LOD_COLOR
 
-static Vector<Color> RESOLUTION_COLOR =
-{
-  Color(0.5f, 0.0f, 0.0f, 1.0f),
-  Color(0.0f, 0.5f, 0.0f, 1.0f),
-  Color(1.0f, 0.0f, 1.0f, 1.0f),
+static Vector<Color> RESOLUTION_COLOR = {
+    Color(0.5f, 0.0f, 0.0f, 1.0f),
+    Color(0.0f, 0.5f, 0.0f, 1.0f),
+    Color(1.0f, 0.0f, 1.0f, 1.0f),
 };
 
 #ifdef VEGETATION_DRAW_LOD_COLOR
@@ -206,7 +202,7 @@ RenderObject* VegetationRenderObject::Clone(RenderObject* newObject)
 
     vegetationRenderObject->densityMap.clear();
 
-    vegetationRenderObject->SetVisibilityDistance(GetVisibilityDistance()); //VI: must be copied before lod ranges
+    vegetationRenderObject->SetVisibilityDistance(GetVisibilityDistance()); // VI: must be copied before lod ranges
     vegetationRenderObject->SetHeightmap(GetHeightmap());
     vegetationRenderObject->SetLayerClusterLimit(GetLayerClusterLimit());
     vegetationRenderObject->SetScaleVariation(GetScaleVariation());
@@ -230,7 +226,7 @@ RenderObject* VegetationRenderObject::Clone(RenderObject* newObject)
 
 void VegetationRenderObject::Save(KeyedArchive* archive, SerializationContext* serializationContext)
 {
-    //VI: need to remove render batches since they are temporary
+    // VI: need to remove render batches since they are temporary
     ClearRenderBatches();
 
     RenderObject::Save(archive, serializationContext);
@@ -279,7 +275,7 @@ void VegetationRenderObject::Load(KeyedArchive* archive, SerializationContext* s
 
     if (IsDataLoadNeeded())
     {
-        //VI: must be loaded before lod ranges
+        // VI: must be loaded before lod ranges
         if (archive->IsKeyExists("vro.visibilityDistance"))
         {
             Vector2 savedVisibilityDistance = archive->GetVector2("vro.visibilityDistance");
@@ -318,8 +314,8 @@ void VegetationRenderObject::Load(KeyedArchive* archive, SerializationContext* s
         else
         {
             SetLayerClusterLimit(archive->GetVector4("vro.clusterLayerLimit"));
-            //Vector4 fakeClusterLimit(6, 16, 16, 1);
-            //SetLayerClusterLimit(fakeClusterLimit);
+            // Vector4 fakeClusterLimit(6, 16, 16, 1);
+            // SetLayerClusterLimit(fakeClusterLimit);
         }
 
         if (archive->IsKeyExists("vro.scaleVariation"))
@@ -356,7 +352,7 @@ void VegetationRenderObject::Load(KeyedArchive* archive, SerializationContext* s
 
         if (serializationContext->GetVersion() < FIXED_VEGETATION_SCENE_VERSION)
         {
-            //old trash with each bit in separate record
+            // old trash with each bit in separate record
             Vector<uint8> densityBits;
             if (archive->IsKeyExists("vro.flippedDensityBitCount"))
             {
@@ -797,7 +793,7 @@ void VegetationRenderObject::InitLodRanges()
     resolutionRanges[1].y = lodRanges.z * smallestUnitSize.x;
 
     resolutionRanges[2].x = lodRanges.z * smallestUnitSize.x;
-    resolutionRanges[2].y = visibleClippingDistances.x; //RESOLUTION_RANGES[2].x * 1000.0f;
+    resolutionRanges[2].y = visibleClippingDistances.x; // RESOLUTION_RANGES[2].x * 1000.0f;
 
     size_t resolutionCount = resolutionRanges.size();
     for (size_t i = 0; i < resolutionCount; ++i)
@@ -869,7 +865,7 @@ void VegetationRenderObject::CreateRenderData()
     indexBuffer = rhi::CreateIndexBuffer(iDesc);
 
 #if defined(__DAVAENGINE_IPHONE__)
-    renderData->ReleaseRenderData(); //release vertex and index buffers data
+    renderData->ReleaseRenderData(); // release vertex and index buffers data
 #endif
 
     ScopedPtr<KeyedArchive> props(new KeyedArchive());
@@ -883,7 +879,7 @@ void VegetationRenderObject::CreateRenderData()
 
     rhi::VertexLayout vertexLayout;
     vertexLayout.AddElement(rhi::VS_POSITION, 0, rhi::VDT_FLOAT, 3);
-    //vertexLayout.AddElement(rhi::VS_NORMAL, 0, rhi::VDT_FLOAT, 3); uncomment, when normals will be used for vertex lit implementation
+    // vertexLayout.AddElement(rhi::VS_NORMAL, 0, rhi::VDT_FLOAT, 3); uncomment, when normals will be used for vertex lit implementation
     vertexLayout.AddElement(rhi::VS_TEXCOORD, 0, rhi::VDT_FLOAT, 2);
     vertexLayout.AddElement(rhi::VS_TEXCOORD, 1, rhi::VDT_FLOAT, 3);
     vertexLayout.AddElement(rhi::VS_TEXCOORD, 2, rhi::VDT_FLOAT, 3);
@@ -894,9 +890,9 @@ void VegetationRenderObject::CreateRenderData()
 
 void VegetationRenderObject::RestoreRenderData()
 {
-    //#if defined(__DAVAENGINE_IPHONE__)
-    //    DVASSERT(false, "Should not even try to restore on iphone - render data is released");
-    //#endif
+    // #if defined(__DAVAENGINE_IPHONE__)
+    //     DVASSERT(false, "Should not even try to restore on iphone - render data is released");
+    // #endif
 
     if (renderData == nullptr)
         return;
@@ -915,7 +911,7 @@ void VegetationRenderObject::RestoreRenderData()
         rhi::UpdateIndexBuffer(indexBuffer, &indexData.front(), 0, indexBufferSize);
     }
 
-    if (heightmap && heightmapTexture) //RHI_COMPLETE later change it to normal restoration and change init heightmap texture to normal logic
+    if (heightmap && heightmapTexture) // RHI_COMPLETE later change it to normal restoration and change init heightmap texture to normal logic
     {
         uint32 hmSize = uint32(heightmap->Size());
         DVASSERT(IsPowerOf2(hmSize));
@@ -929,8 +925,8 @@ bool VegetationRenderObject::ReadyToRender()
     bool renderFlag = IsHardwareCapableToRenderVegetation() && Renderer::GetOptions()->IsOptionEnabled(RenderOptions::VEGETATION_DRAW);
 
 #if defined(__DAVAENGINE_MACOS__) || defined(__DAVAENGINE_WINDOWS__)
-    //VI: case when vegetation was turned off and then qualit changed from low t high is not a real-world scenario
-    //VI: real-world scenario is in resource editor when quality has been changed.
+    // VI: case when vegetation was turned off and then qualit changed from low t high is not a real-world scenario
+    // VI: real-world scenario is in resource editor when quality has been changed.
     FastName currentQuality = QualitySettingsSystem::Instance()->GetCurMaterialQuality(VegetationPropertyNames::VEGETATION_QUALITY_GROUP_NAME);
     bool qualityAllowsVegetation = (VegetationPropertyNames::VEGETATION_QUALITY_NAME_HIGH == currentQuality);
 
@@ -1236,6 +1232,64 @@ void VegetationRenderObject::GenerateDensityMapFromTransparencyMask(const FilePa
     FilePath imagePath = descriptor->GetSourceTexturePathname();
 
     ScopedPtr<Image> lightmapImage(ImageSystem::LoadSingleMip(imagePath, 0));
+
+    if (!lightmapImage)
+    {
+        // source missing: fall back to the runtime variant file of this family
+        const String texPath = descriptor->pathname.GetAbsolutePathname();
+        const String stem = texPath.substr(0, texPath.size() - 4); // strip ".tex"
+
+        Vector<eGPUFamily> gpuOrder;
+        if (descriptor->IsCompressedFile())
+        {
+            gpuOrder.push_back(descriptor->gpu);
+        }
+        gpuOrder.push_back(GPU_DX11);
+        for (int32 gpu = 0; gpu < eGPUFamily::GPU_FAMILY_COUNT; ++gpu)
+        {
+            if (gpu == eGPUFamily::GPU_ORIGIN || gpu == eGPUFamily::GPU_DX11)
+            {
+                continue;
+            }
+            eGPUFamily gpuFamily = static_cast<eGPUFamily>(gpu);
+            bool alreadyListed = false;
+            if (descriptor->IsCompressedFile() && descriptor->gpu == gpuFamily)
+            {
+                alreadyListed = true;
+            }
+            if (alreadyListed == false)
+            {
+                gpuOrder.push_back(gpuFamily);
+            }
+        }
+
+        for (eGPUFamily gpu : gpuOrder)
+        {
+            const String& postfix = GPUFamilyDescriptor::GetGPUPrefix(gpu);
+            if (postfix.empty() == true)
+            {
+                continue;
+            }
+            for (const char* ext : { ".dds", ".pvr" })
+            {
+                const FilePath variant(stem + postfix + ext);
+                if (FileSystem::Instance()->Exists(variant))
+                {
+                    lightmapImage = ImageSystem::LoadSingleMip(variant, 0);
+                    if (lightmapImage)
+                    {
+                        Logger::Warning("[VegetationRenderObject::GenerateDensityMapFromTransparencyMask] Source image %s is missing; density map built from runtime variant %s",
+                                        imagePath.GetAbsolutePathname().c_str(), variant.GetAbsolutePathname().c_str());
+                        break;
+                    }
+                }
+            }
+            if (lightmapImage)
+            {
+                break;
+            }
+        }
+    }
     if (lightmapImage)
     {
         uint32 ratio = lightmapImage->width / DENSITY_MAP_SIZE;
@@ -1251,7 +1305,7 @@ void VegetationRenderObject::GenerateDensityMapFromTransparencyMask(const FilePa
             {
                 for (uint32 x = 0; x < DENSITY_MAP_SIZE; ++x)
                 {
-                    //VI: flip Y in order to match landscape and vegetation light mask
+                    // VI: flip Y in order to match landscape and vegetation light mask
                     uint32 flippedY = DENSITY_MAP_SIZE - y - 1;
 
                     float32 meanAlpha = GetMeanAlpha(x, flippedY, ratio, stride, lightmapImage);
@@ -1369,4 +1423,4 @@ void VegetationRenderObject::Rebuild()
     GenerateDensityMapFromTransparencyMask(lightmapTexturePath);
     UpdateVegetationSetup();
 }
-};
+}; // namespace DAVA

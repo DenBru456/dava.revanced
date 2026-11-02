@@ -1,12 +1,15 @@
 #ifndef __DAVAENGINE_TEXTURE_H__
 #define __DAVAENGINE_TEXTURE_H__
 
-#include "Base/BaseTypes.h"
+// Marks builds with the runtime GPU family fallback.
+#define DAVA_TEXTURE_FAMILY_FALLBACK 1
+
 #include "Base/BaseMath.h"
 #include "Base/BaseObject.h"
+#include "Base/BaseTypes.h"
 #include "Base/FastName.h"
-#include "FileSystem/FilePath.h"
 #include "Concurrency/Mutex.h"
+#include "FileSystem/FilePath.h"
 #include "Render/RHI/rhi_Public.h"
 #include "Render/RenderBase.h"
 #include "Render/UniqueStateSet.h"
@@ -16,10 +19,10 @@
 namespace DAVA
 {
 /**
-	\ingroup render
-	\brief Class that represents texture objects in our SDK.
-	This class support the following formats: RGBA8888, RGB565, RGBA4444, A8 on all platforms.
-	For iOS it also support compressed PVR formats. (PVR2 and PVR4)
+    \ingroup render
+    \brief Class that represents texture objects in our SDK.
+    This class support the following formats: RGBA8888, RGB565, RGBA4444, A8 on all platforms.
+    For iOS it also support compressed PVR formats. (PVR2 and PVR4)
  */
 class Image;
 class TextureDescriptor;
@@ -28,9 +31,9 @@ class Texture;
 
 #ifdef USE_FILEPATH_IN_MAP
 using TexturesMap = Map<FilePath, Texture*>;
-#else //#ifdef USE_FILEPATH_IN_MAP
+#else // #ifdef USE_FILEPATH_IN_MAP
 using TexturesMap = Map<String, Texture*>;
-#endif //#ifdef USE_FILEPATH_IN_MAP
+#endif // #ifdef USE_FILEPATH_IN_MAP
 
 class Texture : public BaseObject
 {
@@ -102,14 +105,14 @@ public:
 
     /**
         \brief Create texture from given file. Supported formats .png, .pvr (only on iOS).
-		If file cannot be opened, returns "pink placeholder" texture.
+        If file cannot be opened, returns "pink placeholder" texture.
         \param[in] pathName path to the png or pvr file
      */
     static Texture* CreateFromFile(const FilePath& pathName, const FastName& group = FastName(), rhi::TextureType typeHint = rhi::TEXTURE_TYPE_2D);
 
     /**
         \brief Create texture from given file. Supported formats .png, .pvr (only on iOS).
-		If file cannot be opened, returns 0
+        If file cannot be opened, returns 0
         \param[in] pathName path to the png or pvr file
      */
     static Texture* PureCreate(const FilePath& pathName, const FastName& group = FastName());
@@ -188,6 +191,9 @@ public:
 
     static eGPUFamily GetGPUForLoading(const eGPUFamily requestedGPU, const TextureDescriptor* descriptor);
 
+    static void SetGPUFallbackOrder(const Vector<eGPUFamily>& order);
+    static const Vector<eGPUFamily>& GetGPUFallbackOrder();
+
 protected:
     void RestoreRenderResource();
 
@@ -214,7 +220,7 @@ protected:
 
 public: // properties for fast access
     rhi::HTexture handle;
-    rhi::HTexture handleDepthStencil; //it's legacy and should be removed. (maybe together with CreateFBO method)
+    rhi::HTexture handleDepthStencil; // it's legacy and should be removed. (maybe together with CreateFBO method)
     rhi::HSamplerState samplerStateHandle;
     rhi::HTextureSet singleTextureSet;
     rhi::SamplerState::Descriptor::Sampler samplerState;
@@ -238,6 +244,7 @@ public: // properties for fast access
 
     static TexturesMap textureMap;
     static Vector<eGPUFamily> gpuLoadingOrder;
+    static Vector<eGPUFamily> gpuFallbackOrder;
 
     static bool pixelizationFlag;
 };
@@ -258,6 +265,6 @@ inline TextureDescriptor* Texture::GetDescriptor() const
 {
     return texDescriptor;
 }
-};
+}; // namespace DAVA
 
 #endif // __DAVAENGINE_TEXTUREGLES_H__

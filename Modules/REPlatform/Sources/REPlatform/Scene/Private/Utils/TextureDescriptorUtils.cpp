@@ -1,11 +1,12 @@
-#include "REPlatform/Scene/Utils/RETextureDescriptorUtils.h"
 #include "REPlatform/Scene/Utils/ImageTools.h"
 #include "REPlatform/Scene/Utils/Preset.h"
+#include "REPlatform/Scene/Utils/RETextureDescriptorUtils.h"
 
 #include <FileSystem/FileList.h>
 #include <FileSystem/KeyedArchive.h>
 #include <Functional/Function.h>
 #include <Logger/Logger.h>
+#include <Render/GPUFamilyDescriptor.h>
 #include <Render/Image/ImageSystem.h>
 
 namespace DAVA
@@ -56,6 +57,19 @@ bool CreateOrUpdateDescriptor(const FilePath& texturePath, const KeyedArchive* p
         return false;
     }
 
+    // a .pvr is a last-resort source: an existing same-basename .dds is kept,
+    // otherwise this pass rewrites a freshly adopted dds back to pvr (the walk visits both)
+    if (sourceFormat == IMAGE_FORMAT_PVR)
+    {
+        FilePath ddsSibling = FilePath::CreateWithNewExtension(texturePath, ".dds");
+        if (FileSystem::Instance()->Exists(ddsSibling))
+        {
+            Logger::Info("[texdescriptor] skipped %s (same-basename .dds preferred as source)",
+                         texturePath.GetAbsolutePathname().c_str());
+            return true;
+        }
+    }
+
     ImageInfo info = ImageSystem::GetImageInfo(texturePath);
 
     FilePath descriptorPath = TextureDescriptor::GetDescriptorPathname(texturePath);
@@ -67,6 +81,9 @@ bool CreateOrUpdateDescriptor(const FilePath& texturePath, const KeyedArchive* p
     {
         descriptor.reset(TextureDescriptor::CreateFromFile(descriptorPath));
     }
+
+    // declared source before any rewrite, for the log below
+    String previousSourceExtension = (descriptor != nullptr) ? descriptor->dataSettings.sourceFileExtension : String();
 
     if (!descriptor)
     {
@@ -84,13 +101,19 @@ bool CreateOrUpdateDescriptor(const FilePath& texturePath, const KeyedArchive* p
     {
         if (sourceFormat != descriptor->dataSettings.sourceFileFormat)
         {
-            descriptor->dataSettings.sourceFileFormat = sourceFormat;
-            descriptor->dataSettings.sourceFileExtension = sourceExtension;
+            // re-point only when the declared master is missing from disk:
+            // the walk also visits compiled siblings (.dds/.pvr)
+            const FilePath declaredSource = descriptor->GetSourceTexturePathname();
+            if (false == FileSystem::Instance()->Exists(declaredSource))
+            {
+                descriptor->dataSettings.sourceFileFormat = sourceFormat;
+                descriptor->dataSettings.sourceFileExtension = sourceExtension;
 
-            descriptor->compression[eGPUFamily::GPU_ORIGIN].imageFormat = sourceFormat;
-            descriptor->compression[eGPUFamily::GPU_ORIGIN].format = info.format;
+                descriptor->compression[eGPUFamily::GPU_ORIGIN].imageFormat = sourceFormat;
+                descriptor->compression[eGPUFamily::GPU_ORIGIN].format = info.format;
 
-            descriptorChanged = true;
+                descriptorChanged = true;
+            }
         }
     }
 
@@ -99,9 +122,95 @@ bool CreateOrUpdateDescriptor(const FilePath& texturePath, const KeyedArchive* p
         descriptorChanged = true;
     }
 
+    // family-infixed files (x.dx11.pvr) are repair sources for main descriptors:
+    // shipped content often keeps pixel data only under GPU-infixed names
+    {
+        const eGPUFamily familyGPU = GPUFamilyDescriptor::GetGPUForPathname(texturePath);
+        if (GPUFamilyDescriptor::IsGPUForDevice(familyGPU))
+        {
+            const String& gpuPrefix = GPUFamilyDescriptor::GetGPUPrefix(familyGPU);
+            const String filename = texturePath.GetFilename();
+            const size_t infixPos = filename.rfind(gpuPrefix);
+            if (infixPos != String::npos)
+            {
+                String mainFilename = filename;
+                mainFilename.erase(infixPos, gpuPrefix.size());
+
+                FilePath mainTexturePath = texturePath;
+                mainTexturePath.ReplaceFilename(mainFilename);
+                FilePath mainDescriptorPath = TextureDescriptor::GetDescriptorPathname(mainTexturePath);
+
+                std::unique_ptr<TextureDescriptor> mainDescriptor;
+                if (FileSystem::Instance()->Exists(mainDescriptorPath))
+                {
+                    mainDescriptor.reset(TextureDescriptor::CreateFromFile(mainDescriptorPath));
+                }
+
+                const bool masterGone =
+                (mainDescriptor != nullptr) &&
+                (false == FileSystem::Instance()->Exists(mainDescriptor->GetSourceTexturePathname()));
+
+                if (masterGone)
+                {
+                    // prefer the dx11 family file; another family only when no dx11 sibling exists
+                    bool shouldRepair = (familyGPU == eGPUFamily::GPU_DX11);
+                    if (!shouldRepair)
+                    {
+                        const String& dx11Prefix = GPUFamilyDescriptor::GetGPUPrefix(eGPUFamily::GPU_DX11);
+                        const String dx11Filename = mainFilename;
+                        const size_t dotPos = dx11Filename.rfind('.');
+                        const String dx11Sibling = dx11Filename.substr(0, dotPos) + dx11Prefix + dx11Filename.substr(dotPos);
+                        FilePath dx11SiblingPath = texturePath;
+                        dx11SiblingPath.ReplaceFilename(dx11Sibling);
+                        shouldRepair = (false == FileSystem::Instance()->Exists(dx11SiblingPath));
+                    }
+
+                    // the copy target must not exist yet
+                    if (shouldRepair && (false == FileSystem::Instance()->Exists(mainTexturePath)))
+                    {
+                        if (FileSystem::Instance()->CopyFile(texturePath, mainTexturePath, false))
+                        {
+                            Logger::Info("[texdescriptor] repaired %s from family file %s",
+                                         mainDescriptorPath.GetAbsolutePathname().c_str(),
+                                         texturePath.GetAbsolutePathname().c_str());
+                            CreateOrUpdateDescriptor(mainTexturePath, preset);
+                        }
+                        else
+                        {
+                            Logger::Error("[texdescriptor] failed to copy %s -> %s",
+                                          texturePath.GetAbsolutePathname().c_str(),
+                                          mainTexturePath.GetAbsolutePathname().c_str());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (descriptorChanged)
     {
+        if (previousSourceExtension.empty())
+        {
+            Logger::Info("[texdescriptor] created %s (source: %s)",
+                         descriptorPath.GetAbsolutePathname().c_str(), sourceExtension.c_str());
+        }
+        else if (previousSourceExtension != sourceExtension)
+        {
+            Logger::Info("[texdescriptor] re-pointed %s (%s -> %s)",
+                         descriptorPath.GetAbsolutePathname().c_str(),
+                         previousSourceExtension.c_str(), sourceExtension.c_str());
+        }
+        else
+        {
+            Logger::Info("[texdescriptor] updated %s (source stays %s)",
+                         descriptorPath.GetAbsolutePathname().c_str(), sourceExtension.c_str());
+        }
+
         descriptor->Save(descriptorPath);
+    }
+    else
+    {
+        Logger::FrameworkDebug("[texdescriptor] unchanged %s", descriptorPath.GetAbsolutePathname().c_str());
     }
 
     return true;
@@ -168,8 +277,16 @@ void ResaveDescriptor(const FilePath& descriptorPath)
 
 void CreateDescriptorsForFolder(const DAVA::FilePath& folder, const DAVA::FilePath& presetPath)
 {
+    if (false == FileSystem::Instance()->Exists(folder))
+    {
+        Logger::Error("[texdescriptor] folder does not exist: %s", folder.GetAbsolutePathname().c_str());
+        return;
+    }
+
+    Logger::Info("[texdescriptor] scanning folder: %s", folder.GetAbsolutePathname().c_str());
     ScopedPtr<KeyedArchive> preset(Preset::LoadArchive(presetPath));
     Internal::CreateDescriptorsForFolder(folder, preset);
+    Logger::Info("[texdescriptor] scan finished: %s", folder.GetAbsolutePathname().c_str());
 }
 
 bool CreateOrUpdateDescriptor(const DAVA::FilePath& texturePath, const DAVA::FilePath& presetPath)

@@ -8,9 +8,8 @@
 
 class MaterialModel;
 class MaterialItem
-: public QObject
-  ,
-  public QStandardItem
+    : public QObject,
+      public QStandardItem
 {
     Q_OBJECT
 
@@ -42,12 +41,13 @@ private slots:
     void onThumbnailReady(const QList<QImage>& images, QVariant userData);
 
 private:
+    void applyNoTextureIcon();
+
     DAVA::NMaterial* material;
     DAVA::uint32 curFlag = 0;
     DAVA::int32 lodIndex = -1;
     DAVA::int32 switchIndex = -1;
     bool isPreviewRequested = false;
 };
-
 
 #endif // __MATERIALS_ITEM_H__

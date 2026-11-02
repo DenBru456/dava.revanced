@@ -62,7 +62,8 @@ uint32 GetTexturePhysicalSize(const TextureDescriptor* descriptor, const eGPUFam
             }
             else
             {
-                Logger::Error("ImageTools::[GetTexturePhysicalSize] Can't detect type of file %s", imagePathname.GetStringValue().c_str());
+                // a family file that cannot be read is a data gap, not a user error
+                Logger::Warning("ImageTools::[GetTexturePhysicalSize] Can't detect type of file %s", imagePathname.GetStringValue().c_str());
             }
         }
     }

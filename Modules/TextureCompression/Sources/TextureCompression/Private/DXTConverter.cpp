@@ -1,18 +1,18 @@
 #include "TextureCompression/Private/DXTConverter.h"
 
-#include "Logger/Logger.h"
 #include "FileSystem/FilePath.h"
-#include "Render/TextureDescriptor.h"
+#include "Logger/Logger.h"
+#include "Render/GPUFamilyDescriptor.h"
 #include "Render/Image/Image.h"
 #include "Render/Image/ImageSystem.h"
 #include "Render/Image/LibDdsHelper.h"
-#include "Render/GPUFamilyDescriptor.h"
+#include "Render/TextureDescriptor.h"
 
 namespace DAVA
 {
 FilePath DXTConverter::ConvertToDxt(const TextureDescriptor& descriptor, eGPUFamily gpuFamily, const FilePath& outFolder)
 {
-    FilePath fileToConvert = descriptor.GetSourceTexturePathname();
+    FilePath fileToConvert = descriptor.GetExistingPathnameForGPU(GPU_ORIGIN);
     Vector<Image*> inputImages;
     eErrorCode loadResult = ImageSystem::Load(fileToConvert, inputImages);
     if (loadResult != eErrorCode::SUCCESS || inputImages.empty())
@@ -102,7 +102,7 @@ FilePath DXTConverter::ConvertToDxt(const TextureDescriptor& descriptor, eGPUFam
 
 FilePath DXTConverter::ConvertCubemapToDxt(const TextureDescriptor& descriptor, eGPUFamily gpuFamily, const FilePath& outFolder)
 {
-    FilePath fileToConvert = descriptor.GetSourceTexturePathname();
+    FilePath fileToConvert = descriptor.GetExistingPathnameForGPU(GPU_ORIGIN);
     FilePath outputName = GetDXTOutput(descriptor, gpuFamily, outFolder);
 
     Vector<FilePath> faceNames;
@@ -163,7 +163,7 @@ FilePath DXTConverter::ConvertCubemapToDxt(const TextureDescriptor& descriptor, 
                 }
             }
 
-            //generate mipmaps for every face
+            // generate mipmaps for every face
             if (descriptor.dataSettings.GetGenerateMipMaps())
             {
                 for (auto& imageSet : imageSets)
@@ -249,4 +249,4 @@ FilePath DXTConverter::GetDXTOutput(const TextureDescriptor& descriptor, eGPUFam
 
     return retPath;
 }
-}
+} // namespace DAVA

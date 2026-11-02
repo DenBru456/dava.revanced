@@ -1,10 +1,10 @@
 #include "Classes/Qt/TextureBrowser/TextureBrowser.h"
 #include "Classes/Qt/CubemapEditor/CubemapUtils.h"
+#include "Classes/Qt/Scene/SceneSignals.h"
 #include "Classes/Qt/TextureBrowser/TextureCache.h"
 #include "Classes/Qt/TextureBrowser/TextureConvertor.h"
 #include "Classes/Qt/TextureBrowser/TextureListDelegate.h"
 #include "Classes/Qt/TextureBrowser/TextureListModel.h"
-#include "Classes/Qt/Scene/SceneSignals.h"
 
 #include "REPlatform/Commands/EntityRemoveCommand.h"
 #include "REPlatform/Global/GlobalOperations.h"
@@ -23,9 +23,9 @@
 #include <TArc/Core/Deprecated.h>
 #include <TArc/Core/FieldBinder.h>
 
-#include <Render/PixelFormatDescriptor.h>
-#include <Render/Image/LibPVRHelper.h>
 #include <Render/Image/LibDdsHelper.h>
+#include <Render/Image/LibPVRHelper.h>
+#include <Render/PixelFormatDescriptor.h>
 
 #include <QAbstractItemModel>
 #include <QComboBox>
@@ -307,6 +307,15 @@ void TextureBrowser::updatePropertiesWarning()
 
 void TextureBrowser::updateConvertedImageAndInfo(const QList<QImage>& images, DAVA::TextureDescriptor& descriptor)
 {
+    if (images.isEmpty())
+    {
+        // nothing readable for this family: keep the placeholder, never index an empty list
+        ui->textureAreaConverted->setImage(QImage());
+        ui->textureAreaConverted->waitbarShow(false);
+        updateInfoConverted();
+        return;
+    }
+
     if (!descriptor.IsCubeMap())
     {
         ui->textureAreaConverted->setImage(images[0]);
@@ -365,16 +374,24 @@ void TextureBrowser::updateInfoOriginal(const QList<QImage>& images)
         }
         else
         {
-            imagePath = curDescriptor->GetSourceTexturePathname();
+            imagePath = curDescriptor->GetExistingPathnameForGPU(DAVA::GPU_ORIGIN);
         }
 
-        const DAVA::ImageInfo info = DAVA::ImageSystem::GetImageInfo(imagePath);
-        DAVA::String formatStr = DAVA::PixelFormatDescriptor::GetPixelFormatString(info.format);
+        DAVA::ImageInfo info;
+        if (imagePath.IsEmpty() == false)
+        {
+            info = DAVA::ImageSystem::GetImageInfo(imagePath);
+        }
+        // unknown format means the descriptor has no readable source, not a broken file
+        DAVA::String formatStr = (info.format == DAVA::FORMAT_INVALID) ? DAVA::String("no readable source") : DAVA::PixelFormatDescriptor::GetPixelFormatString(info.format);
 
         int datasize = TextureCache::Instance()->getOriginalSize(curDescriptor);
         int filesize = TextureCache::Instance()->getOriginalFileSize(curDescriptor);
 
-        sprintf(tmp, "Format: %s\nSize: %dx%d\nData size: %s\nFile size: %s", formatStr.c_str(), images[0].width(), images[0].height(),
+        const int width = images.isEmpty() ? 0 : images[0].width();
+        const int height = images.isEmpty() ? 0 : images[0].height();
+
+        sprintf(tmp, "Format: %s\nSize: %dx%d\nData size: %s\nFile size: %s", formatStr.c_str(), width, height,
                 DAVA::SizeInBytesToString(datasize).c_str(),
                 DAVA::SizeInBytesToString(filesize).c_str());
 
@@ -1141,7 +1158,7 @@ void TextureBrowser::textureDescriptorChanged(DAVA::TextureDescriptor* descripto
 {
     setTexture(textureListModel->getTexture(descriptor), descriptor);
 
-    //update texture browser with actual texture info for all tabs
+    // update texture browser with actual texture info for all tabs
     const DAVA::eGPUFamily curGPU = curTextureView;
     const eTextureConvertMode requestedConvertMode = getConvertMode(CONVERT_MODIFIED);
     for (DAVA::int32 i = 0; i < DAVA::GPU_DEVICE_COUNT; ++i)

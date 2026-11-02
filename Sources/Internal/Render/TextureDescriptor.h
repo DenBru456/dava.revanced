@@ -1,13 +1,13 @@
 #pragma once
 
-#include "Base/BaseTypes.h"
 #include "Base/BaseObject.h"
+#include "Base/BaseTypes.h"
 #include "FileSystem/FilePath.h"
 #include "Render/Texture.h"
 #include "Utils/MD5.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//Info: all helper code should be moved into Render/TextureDescriptorUtils.h
+// Info: all helper code should be moved into Render/TextureDescriptorUtils.h
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace DAVA
@@ -85,8 +85,7 @@ public:
                       PROPERTY("isNormalMap", "isNormalMap", GetIsNormalMap, SetIsNormalMap, I_VIEW | I_EDIT | I_SAVE)
                       MEMBER(cubefaceFlags, "cubefaceFlags", I_SAVE)
                       MEMBER(sourceFileFormat, "sourceFileFormat", I_SAVE)
-                      MEMBER(sourceFileExtension, "sourceFileExtension", I_SAVE)
-                      )
+                      MEMBER(sourceFileExtension, "sourceFileExtension", I_SAVE))
 
     private:
         void EnableFlag(bool enable, int8 flag);
@@ -110,8 +109,7 @@ public:
                       MEMBER(sourceFileCrc, "Source File CRC", I_SAVE)
                       MEMBER(compressToWidth, "compressToWidth", I_SAVE)
                       MEMBER(compressToHeight, "compressToHeight", I_SAVE)
-                      MEMBER(convertedFileCrc, "Converted File CRC", I_SAVE)
-                      )
+                      MEMBER(convertedFileCrc, "Converted File CRC", I_SAVE))
     };
 
 public:
@@ -129,7 +127,7 @@ public:
     void SetQualityGroup(const FastName& group);
     const FastName& GetQualityGroup() const;
 
-    bool Load(const FilePath& filePathname); //may be protected?
+    bool Load(const FilePath& filePathname); // may be protected?
 
     void Save() const;
     void Save(const FilePath& filePathname) const;
@@ -147,6 +145,15 @@ public:
     bool IsCubeMap() const;
 
     FilePath GetSourceTexturePathname() const;
+
+    // existing, readable image for this family (never the descriptor itself)
+    FilePath GetExistingPathnameForGPU(eGPUFamily gpu) const;
+
+    // how file age decides between several files of one family when the descriptor declares
+    // no container: NONE ignores age (declared container, .pvr, .dds),
+    // CURRENT prefers the file on disk, NEW prefers the newest
+    static void SetTimePriority(int32 value);
+    static int32 GetTimePriority();
 
     void GetFacePathnames(Vector<FilePath>& faceNames) const;
     void GenerateFacePathnames(const FilePath& baseName, const Array<String, Texture::CUBE_FACE_COUNT>& faceNameSuffixes, Vector<FilePath>& faceNames) const;
@@ -183,7 +190,7 @@ public:
 private:
     const Compression* GetCompressionParams(eGPUFamily forGPU) const;
 
-    //loading
+    // loading
     DAVA_DEPRECATED(void RecalculateCompressionSourceCRC());
     DAVA_DEPRECATED(uint32 ReadSourceCRC_V8_or_less() const);
 
@@ -206,7 +213,7 @@ private:
 public:
     FilePath pathname;
 
-    //moved from Texture
+    // moved from Texture
     FastName qualityGroup;
     TextureDrawSettings drawSettings;
     TextureDataSettings dataSettings;
@@ -216,10 +223,12 @@ public:
     static Array<ImageFormat, 6> sourceTextureTypes;
     static Array<ImageFormat, 2> compressedTextureTypes;
 
+    static int32 timePriority;
+
     eGPUFamily gpu = eGPUFamily::GPU_ORIGIN;
     ImageFormat imageFormat = ImageFormat::IMAGE_FORMAT_UNKNOWN;
     PixelFormat format = PixelFormat::FORMAT_INVALID; // texture format
 
     bool isCompressedFile = false;
 };
-};
+}; // namespace DAVA
