@@ -223,7 +223,7 @@ DescriptorManagerSettingsDialog::DescriptorManagerSettingsDialog(DescriptorManag
 
     sourceBox = new QComboBox(this);
     sourceBox->addItem(tr("Existing"), DescriptorManagerSettings::SOURCE_EXISTING);
-    sourceBox->addItem(tr("original"), DescriptorManagerSettings::SOURCE_DEFAULT);
+    sourceBox->addItem(tr("Original"), DescriptorManagerSettings::SOURCE_DEFAULT);
     sourceBox->addItem(tr("Off"), DescriptorManagerSettings::SOURCE_OFF);
     sourceBox->setItemData(0, tr("Use only sources already present under the plain name. Nothing is ever created."),
                            Qt::ToolTipRole);
@@ -256,7 +256,7 @@ DescriptorManagerSettingsDialog::DescriptorManagerSettingsDialog(DescriptorManag
     defaultExtensionBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     defaultExtensionBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    sceneOpenBox = new QCheckBox(tr("Create missing descriptors when a scene opens"), this);
+    sceneOpenBox = new QCheckBox(tr("React to scene open/add"), this);
     sceneOpenBox->setChecked(settings->generateMissingOnSceneOpen);
     sceneOpenBox->setToolTip(tr("A scene whose textures have no .tex normally shows pink placeholders. "
                                 "On: the descriptors are created from the source images when the scene opens "
@@ -330,13 +330,16 @@ DescriptorManagerSettingsDialog::DescriptorManagerSettingsDialog(DescriptorManag
     connect(okButton, &QPushButton::clicked, this, &DescriptorManagerSettingsDialog::OnAccepted);
     connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
 
+    // buttons close the MISC box: Defaults on the left edge, OK and Cancel spaced in
     QHBoxLayout* buttonRow = new QHBoxLayout();
-    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->setContentsMargins(0, ROW_GAP, 0, 0);
     buttonRow->setSpacing(ROW_GAP);
     buttonRow->addWidget(defaultsButton);
     buttonRow->addStretch(1);
     buttonRow->addWidget(okButton);
+    buttonRow->addStretch(1);
     buttonRow->addWidget(cancelButton);
+    miscLayout->addLayout(buttonRow, 7, 0, 1, 2);
 
     connect(formatPageButton, &QPushButton::clicked, this, [this]()
             { ShowPage(PAGE_FORMAT); });
@@ -354,7 +357,6 @@ DescriptorManagerSettingsDialog::DescriptorManagerSettingsDialog(DescriptorManag
     layout->setSpacing(GROUP_GAP);
     layout->addWidget(priorityGroup);
     layout->addWidget(miscGroup);
-    layout->addLayout(buttonRow);
 
     ShowPage(PAGE_FORMAT);
 
