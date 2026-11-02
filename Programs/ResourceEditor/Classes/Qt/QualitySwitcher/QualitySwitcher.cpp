@@ -13,9 +13,11 @@
 #include <TArc/WindowSubSystem/UI.h>
 
 #include <Base/Set.h>
+#include <Engine/EngineContext.h>
 #include <Render/Highlevel/RenderSystem.h>
 #include <Render/Material/NMaterial.h>
 #include <Scene3D/Systems/QualitySettingsSystem.h>
+#include <Sound/SoundSystem.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -37,6 +39,7 @@ QualitySwitcher::QualitySwitcher()
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     QGroupBox* texturesGroup = new QGroupBox(this);
     QGroupBox* materialsGroup = new QGroupBox(this);
+    QGroupBox* soundsGroup = new QGroupBox(this);
     QGroupBox* optionsGroup = new QGroupBox(this);
     QGroupBox* particlesGroup = new QGroupBox(this);
     QWidget* buttonsGroup = new QWidget(this);
@@ -153,6 +156,42 @@ QualitySwitcher::QualitySwitcher()
         }
     }
 
+    // sounds quality
+    {
+        QGridLayout* soundsLayout = new QGridLayout(soundsGroup);
+        soundsLayout->setColumnMinimumWidth(0, minColumnW);
+        soundsLayout->setColumnMinimumWidth(1, minColumnW);
+
+        soundsGroup->setTitle("Sounds");
+        soundsGroup->setLayout(soundsLayout);
+
+        QLabel* labSfx = new QLabel("Sfx:", soundsGroup);
+        QComboBox* comboSfx = new QComboBox(soundsGroup);
+        comboSfx->setObjectName("SfxQualityCombo");
+
+        QObject::connect(comboSfx, SIGNAL(activated(int)), this, SLOT(OnSetSettingsDirty(int)));
+
+        DAVA::FastName curSfxQuality = DAVA::QualitySettingsSystem::Instance()->GetCurSFXQuality();
+        const size_t sfxCount = DAVA::QualitySettingsSystem::Instance()->GetSFXQualityCount();
+
+        for (size_t i = 0; i < sfxCount; ++i)
+        {
+            DAVA::FastName sfxQualityName = DAVA::QualitySettingsSystem::Instance()->GetSFXQualityName(i);
+            comboSfx->addItem(sfxQualityName.c_str());
+
+            if (sfxQualityName == curSfxQuality)
+            {
+                comboSfx->setCurrentIndex(comboSfx->count() - 1);
+            }
+        }
+
+        // no 'sounds:' section in quality.yaml keeps the combo visible but disabled
+        comboSfx->setEnabled(sfxCount > 0);
+
+        soundsLayout->addWidget(labSfx, 0, 0);
+        soundsLayout->addWidget(comboSfx, 0, 1);
+    }
+
     // particles quality
     {
         QGridLayout* particlesLayout = new QGridLayout(particlesGroup);
@@ -261,6 +300,7 @@ QualitySwitcher::QualitySwitcher()
 
     mainLayout->addWidget(texturesGroup);
     mainLayout->addWidget(materialsGroup);
+    mainLayout->addWidget(soundsGroup);
     mainLayout->addWidget(particlesGroup);
     mainLayout->addWidget(optionsGroup);
     mainLayout->addStretch();
@@ -398,6 +438,21 @@ void QualitySwitcher::ApplySettings()
                     materialSettingsChanged = true;
                     DAVA::QualitySettingsSystem::Instance()->SetCurMaterialQuality(group, newMaQuality);
                 }
+            }
+        }
+    }
+
+    //sounds
+    {
+        QComboBox* combo = findChild<QComboBox*>("SfxQualityCombo");
+        if (nullptr != combo && combo->count() > 0)
+        {
+            DAVA::FastName newSfxQuality(combo->currentText().toLatin1());
+            if (newSfxQuality != DAVA::QualitySettingsSystem::Instance()->GetCurSFXQuality())
+            {
+                DAVA::QualitySettingsSystem::Instance()->SetCurSFXQuality(newSfxQuality);
+                // the sfx sheet has to be re-read for the new quality right away
+                DAVA::Deprecated::GetAccessor()->GetEngineContext()->soundSystem->InitFromQualitySettings();
             }
         }
     }
