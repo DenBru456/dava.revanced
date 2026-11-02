@@ -242,6 +242,8 @@ namespace
 // NOTE: the settings say how the mode looks; whether it is on lives in a property node
 const DAVA::String fullscreenModeNode = "reFullscreenMode";
 const DAVA::String fullscreenModeActiveKey = "active";
+const DAVA::String modeOpenedHostsKey = "openedHosts";
+const DAVA::String modeClosedHostsKey = "closedHosts";
 
 bool LoadModeActive(DAVA::ContextAccessor* accessor)
 {
@@ -263,6 +265,43 @@ void SaveModeActive(DAVA::ContextAccessor* accessor, bool active)
 
     DAVA::PropertiesItem item = accessor->CreatePropertiesNode(fullscreenModeNode);
     item.Set(fullscreenModeActiveKey, active);
+}
+
+// NOTE: the layout a mode was left with: which hosts it had open, and which it had closed
+QSet<QString> LoadHostSet(DAVA::ContextAccessor* accessor, const DAVA::String& key)
+{
+    QSet<QString> hosts;
+    if (accessor == nullptr)
+    {
+        return hosts;
+    }
+
+    DAVA::PropertiesItem item = accessor->CreatePropertiesNode(fullscreenModeNode);
+    const DAVA::Vector<DAVA::String> names = item.Get(key, DAVA::Vector<DAVA::String>());
+    for (const DAVA::String& name : names)
+    {
+        hosts.insert(QString::fromUtf8(name.c_str()));
+    }
+
+    return hosts;
+}
+
+void SaveHostSet(DAVA::ContextAccessor* accessor, const DAVA::String& key, const QSet<QString>& hosts)
+{
+    if (accessor == nullptr)
+    {
+        return;
+    }
+
+    DAVA::Vector<DAVA::String> names;
+    names.reserve(hosts.size());
+    for (const QString& host : hosts)
+    {
+        names.push_back(DAVA::String(host.toUtf8().constData()));
+    }
+
+    DAVA::PropertiesItem item = accessor->CreatePropertiesNode(fullscreenModeNode);
+    item.Set(key, names);
 }
 
 // NOTE: not from PostInit, the docks do not exist yet; waits for the first scene
@@ -327,6 +366,10 @@ void REModule::PostInit()
     ui->InjectWindow(DAVA::mainWindowKey, globalData->mainWindow);
     globalData->mainWindow->AfterInjectInit();
     globalData->mainWindow->EnableGlobalTimeout(true);
+
+    // NOTE: the mode layout of the previous run, so a mode comes back the way it was left
+    modeHostOpened = LoadHostSet(accessor, modeOpenedHostsKey);
+    modeHostClosed = LoadHostSet(accessor, modeClosedHostsKey);
 
     generalSettingsWrapper = accessor->CreateWrapper(DAVA::ReflectedTypeDB::Get<DAVA::GeneralSettings>());
     generalSettingsWrapper.SetListener(this);
@@ -713,21 +756,51 @@ void REModule::ToggleFullscreen()
             }
         }
 
-        // NOTE: what this session hides, so the exit can tell what the user brought back
-        fullscreenHiddenByMode.clear();
+        // NOTE: what normal mode looked like, per host. The layout snapshot also stores visibility,
+        // so a mode that was left behind by a killed session can hide a toolbar for good
+        windowedHostVisibleAtEntry.clear();
+        auto rememberEntryVisibility = [this](QWidget* widget)
+        {
+            // NOTE: a forced entry restores the layout of the previous session's mode, not of normal mode
+            const bool visible = (modeEnterForced == true) ? true : widget->isVisible();
+            windowedHostVisibleAtEntry.insert(WidgetKey(widget), visible);
+        };
+
+        const QList<QDockWidget*> entryDocks = mainWindow->findChildren<QDockWidget*>();
+        for (QDockWidget* dock : entryDocks)
+        {
+            rememberEntryVisibility(dock);
+        }
+
+        const QList<QToolBar*> entryToolbars = mainWindow->findChildren<QToolBar*>();
+        for (QToolBar* toolbar : entryToolbars)
+        {
+            rememberEntryVisibility(toolbar);
+        }
 
         QList<QWidget*> hiddenHosts;
 
-        auto hideUnlessKept = [this, &hiddenHosts](QWidget* widget)
+        // NOTE: the mode returns to the layout it was left with, not to stock: what is not recorded
+        // is hidden by the mode, what the user closed in it stays closed, what the user opened in it
+        // stays open. Normal mode is untouched by this, it is restored on exit from the entry map
+        // NOTE: the lambda reads the mode's record, so it needs this, not only the host list
+        auto applyModeVisibility = [this, &hiddenHosts](QWidget* widget)
         {
             const QString key = WidgetKey(widget);
-            if (fullscreenKeptVisible.contains(key) == true)
+
+            if (modeHostClosed.contains(key) == true)
             {
-                // NOTE: the user opened this one in an earlier session, leave it
+                widget->hide();
+                hiddenHosts.push_back(widget);
                 return;
             }
 
-            fullscreenHiddenByMode.insert(key);
+            if (modeHostOpened.contains(key) == true)
+            {
+                widget->show();
+                return;
+            }
+
             widget->hide();
             hiddenHosts.push_back(widget);
         };
@@ -737,7 +810,7 @@ void REModule::ToggleFullscreen()
             const QList<QDockWidget*> docks = mainWindow->findChildren<QDockWidget*>();
             for (QDockWidget* dock : docks)
             {
-                hideUnlessKept(dock);
+                applyModeVisibility(dock);
             }
         }
 
@@ -746,7 +819,7 @@ void REModule::ToggleFullscreen()
             const QList<QToolBar*> toolbars = mainWindow->findChildren<QToolBar*>();
             for (QToolBar* toolbar : toolbars)
             {
-                hideUnlessKept(toolbar);
+                applyModeVisibility(toolbar);
             }
         }
 
@@ -756,7 +829,6 @@ void REModule::ToggleFullscreen()
             QObject::disconnect(connection);
         }
         fullscreenDockConnections.clear();
-        fullscreenUserClosedDocks.clear();
 
         // NOTE: a close during the mode must not be overruled by the layout snapshot
         auto onHostVisibilityChanged = [this](const QString& key, bool visible)
@@ -769,12 +841,13 @@ void REModule::ToggleFullscreen()
 
             if (visible == false)
             {
-                fullscreenUserClosedDocks.insert(key);
-                fullscreenKeptVisible.remove(key);
+                modeHostClosed.insert(key);
+                modeHostOpened.remove(key);
             }
             else
             {
-                fullscreenUserClosedDocks.remove(key);
+                modeHostOpened.insert(key);
+                modeHostClosed.remove(key);
             }
         };
 
@@ -875,37 +948,6 @@ void REModule::ToggleFullscreen()
         }
         fullscreenDockConnections.clear();
 
-        // NOTE: what the user re-opened stays open in the next session
-        auto rememberKept = [this](QWidget* widget)
-        {
-            const QString key = WidgetKey(widget);
-            if (fullscreenHiddenByMode.contains(key) == false)
-            {
-                return;
-            }
-
-            if (widget->isVisible() == true)
-            {
-                fullscreenKeptVisible.insert(key);
-            }
-            else
-            {
-                fullscreenKeptVisible.remove(key);
-            }
-        };
-
-        const QList<QToolBar*> exitToolbars = mainWindow->findChildren<QToolBar*>();
-        for (QToolBar* toolbar : exitToolbars)
-        {
-            rememberKept(toolbar);
-        }
-
-        const QList<QDockWidget*> exitDocks = mainWindow->findChildren<QDockWidget*>();
-        for (QDockWidget* dock : exitDocks)
-        {
-            rememberKept(dock);
-        }
-
         // NOTE: the shortcuts belong to their real hosts again
         for (QAction* action : fullscreenRehomedActions)
         {
@@ -913,27 +955,13 @@ void REModule::ToggleFullscreen()
         }
         fullscreenRehomedActions.clear();
 
-        bool restored = false;
+        // NOTE: the snapshot is restored for order and geometry only, its visibility flags are not
+        // trusted: it is captured from whatever layout normal mode was in, which a broken exit may
+        // have already emptied. Visibility is decided below, per host, from what was seen at entry
         if (windowedDockState.isEmpty() == false)
         {
-            restored = mainWindow->restoreState(windowedDockState);
+            mainWindow->restoreState(windowedDockState);
             windowedDockState.clear();
-        }
-
-        if (restored == false)
-        {
-            // NOTE: plain show() so panels and toolbars always come back
-            const QList<QDockWidget*> docks = mainWindow->findChildren<QDockWidget*>();
-            for (QDockWidget* dock : docks)
-            {
-                dock->show();
-            }
-
-            const QList<QToolBar*> toolbars = mainWindow->findChildren<QToolBar*>();
-            for (QToolBar* toolbar : toolbars)
-            {
-                toolbar->show();
-            }
         }
 
         const QList<DAVA::SceneTabbar*> sceneTabbars = mainWindow->findChildren<DAVA::SceneTabbar*>();
@@ -942,40 +970,67 @@ void REModule::ToggleFullscreen()
             tabbar->show();
         }
 
-        // NOTE: not part of the restored layout, put it back explicitly
-        const QList<QDockWidget*> keptDocks = mainWindow->findChildren<QDockWidget*>();
-        for (QDockWidget* dock : keptDocks)
-        {
-            if (fullscreenKeptVisible.contains(WidgetKey(dock)) == true)
-            {
-                dock->show();
-            }
-        }
-
-        // NOTE: restoreState brought back what the user closed, undo it
+        // NOTE: docks and toolbars take the same path: closed by the user stays closed, opened by the
+        // user stays open, everything else returns to what it was before the mode
         modeHidingInProgress = true;
 
-        auto applyUserChoice = [this](QWidget* widget)
+        // NOTE: normal mode gets back exactly what it had when the mode started; what was opened or
+        // closed inside the mode belongs to the mode and is applied again the next time it is entered
+        auto applyExitVisibility = [this](QWidget* widget)
         {
-            if (fullscreenUserClosedDocks.contains(WidgetKey(widget)) == true)
+            const auto it = windowedHostVisibleAtEntry.find(WidgetKey(widget));
+            if (it != windowedHostVisibleAtEntry.end())
             {
-                widget->hide();
+                widget->setVisible(it.value());
+            }
+            else
+            {
+                widget->show();
             }
         };
 
         const QList<QToolBar*> chosenToolbars = mainWindow->findChildren<QToolBar*>();
         for (QToolBar* toolbar : chosenToolbars)
         {
-            applyUserChoice(toolbar);
+            applyExitVisibility(toolbar);
         }
 
         const QList<QDockWidget*> chosenDocks = mainWindow->findChildren<QDockWidget*>();
         for (QDockWidget* dock : chosenDocks)
         {
-            applyUserChoice(dock);
+            applyExitVisibility(dock);
+        }
+
+        // NOTE: an editor with no panel and no toolbar visible is never the intent; if the layout
+        // ended up that way, the close would persist it and every later session starts empty
+        bool anyHostVisible = false;
+        for (QToolBar* toolbar : chosenToolbars)
+        {
+            anyHostVisible = anyHostVisible || toolbar->isVisible();
+        }
+        for (QDockWidget* dock : chosenDocks)
+        {
+            anyHostVisible = anyHostVisible || dock->isVisible();
+        }
+
+        if (anyHostVisible == false)
+        {
+            for (QToolBar* toolbar : chosenToolbars)
+            {
+                toolbar->show();
+            }
+            for (QDockWidget* dock : chosenDocks)
+            {
+                dock->show();
+            }
         }
 
         modeHidingInProgress = false;
+        windowedHostVisibleAtEntry.clear();
+
+        // NOTE: the mode's own layout outlives the mode, that is the point of it
+        SaveHostSet(GetAccessor(), modeOpenedHostsKey, modeHostOpened);
+        SaveHostSet(GetAccessor(), modeClosedHostsKey, modeHostClosed);
 
         // NOTE: menu and status bar visibility are not part of the saved state
         if (mainWindow->menuBar() != nullptr)
@@ -986,16 +1041,6 @@ void REModule::ToggleFullscreen()
         if (mainWindow->statusBar() != nullptr)
         {
             mainWindow->statusBar()->setVisible(windowedStatusBarVisible);
-        }
-
-        // NOTE: close it again, or it returns on every entry
-        const QList<QDockWidget*> closedDocks = mainWindow->findChildren<QDockWidget*>();
-        for (QDockWidget* dock : closedDocks)
-        {
-            if (fullscreenUserClosedDocks.contains(WidgetKey(dock)) == true)
-            {
-                dock->hide();
-            }
         }
 
         if (topLevel != nullptr)

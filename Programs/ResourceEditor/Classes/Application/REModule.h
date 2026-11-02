@@ -7,6 +7,7 @@
 #include <Render/Material/NMaterial.h>
 #include <QAction>
 #include <QByteArray>
+#include <QHash>
 #include <QList>
 #include <QMetaObject>
 #include <QRect>
@@ -57,15 +58,17 @@ protected:
     // set while the startup restore runs: an already fullscreen window must enter the mode, not leave it
     bool modeEnterForced = false;
 
-    // widgets the mode hid but the user reopened: they stay open in the next session of the mode
-    QSet<QString> fullscreenKeptVisible;
-    QSet<QString> fullscreenHiddenByMode;
+    // the layout the mode was left with: hosts the user opened in it and hosts the user closed in it
+    QSet<QString> modeHostOpened;
+    QSet<QString> modeHostClosed;
+
+    // normal-mode visibility per host, captured before the mode hides anything
+    QHash<QString, bool> windowedHostVisibleAtEntry;
 
     // actions whose shortcuts moved onto the window because their host is hidden in the mode
     QList<QAction*> fullscreenRehomedActions;
 
-    // docks the user closed in the mode: closed again after the layout snapshot is restored
-    QSet<QString> fullscreenUserClosedDocks;
+    // watchers on the hosts while a mode is active, so in-mode changes reach the mode's memory
     QList<QMetaObject::Connection> fullscreenDockConnections;
     bool windowedMenuBarVisible = true;
     bool windowedStatusBarVisible = true;
