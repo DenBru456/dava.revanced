@@ -40,7 +40,8 @@ void ObjectPlacementModule::OnContextDeleted(DAVA::DataContext* context)
 
 void ObjectPlacementModule::PostInit()
 {
-    const QString toolBarName("Main Toolbar");
+    // the three placement buttons live on their own toolbar, so View > Toolbars can hide just them
+    const QString toolBarName("Place");
     const QString editMenuName("Edit");
 
     const QString centerPivotPointName("actionCenterPivotPoint");
@@ -49,6 +50,13 @@ void ObjectPlacementModule::PostInit()
 
     ContextAccessor* accessor = GetAccessor();
     UI* ui = GetUI();
+
+    QList<QString> location = QList<QString>() << "View"
+                                               << "Toolbars";
+    InsertionParams after = { InsertionParams::eInsertionMethod::AfterItem, "Main Toolbar" };
+    ActionPlacementInfo toolbarTogglePlacement(CreateMenuPoint(location, after));
+    ui->DeclareToolbar(DAVA::mainWindowKey, toolbarTogglePlacement, toolBarName);
+
     FieldDescriptor sceneDataFieldDescr;
     sceneDataFieldDescr.fieldName = DAVA::FastName(SceneData::scenePropertyName);
     sceneDataFieldDescr.type = DAVA::ReflectedTypeDB::Get<SceneData>();

@@ -147,6 +147,15 @@ void DebugDrawModule::PostInit()
     UI* ui = GetUI();
     ContextAccessor* accessor = GetAccessor();
 
+    // the LOD and hanging-object switches used to ride "DebugDrawToolbar", which is never declared,
+    // so View > Toolbars had no entry to hide them; they live on one MISC toolbar now
+    const QString miscToolBarName("MISC");
+    QList<QString> location = QList<QString>() << "View"
+                                               << "Toolbars";
+    InsertionParams after = { InsertionParams::eInsertionMethod::AfterItem, "Main Toolbar" };
+    ActionPlacementInfo toolbarTogglePlacement(CreateMenuPoint(location, after));
+    ui->DeclareToolbar(DAVA::mainWindowKey, toolbarTogglePlacement, miscToolBarName);
+
     fieldBinder.reset(new FieldBinder(accessor));
 
     accessor->GetGlobalContext()->CreateData(std::make_unique<DebugDrawModuleData>());
@@ -199,7 +208,7 @@ void DebugDrawModule::PostInit()
         AttachWidgetToAction(action, switchesWithDifferentLodsBtn);
 
         ActionPlacementInfo placementInfo;
-        placementInfo.AddPlacementPoint(CreateToolbarPoint("DebugDrawToolbar"));
+        placementInfo.AddPlacementPoint(CreateToolbarPoint(miscToolBarName));
         placementInfo.AddPlacementPoint(CreateMenuPoint(menuScenePath, upperMenuInsertion));
 
         ui->AddAction(mainWindowKey, placementInfo, action);
@@ -252,7 +261,7 @@ void DebugDrawModule::PostInit()
         AttachWidgetToAction(action, hangingBtn);
 
         ActionPlacementInfo placementInfo;
-        placementInfo.AddPlacementPoint(CreateToolbarPoint("DebugDrawToolbar"));
+        placementInfo.AddPlacementPoint(CreateToolbarPoint(miscToolBarName));
         placementInfo.AddPlacementPoint(CreateMenuPoint(menuScenePath, upperMenuInsertion));
 
         ui->AddAction(mainWindowKey, placementInfo, action);
