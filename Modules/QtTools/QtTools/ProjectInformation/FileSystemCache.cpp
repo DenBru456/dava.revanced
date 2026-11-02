@@ -3,17 +3,18 @@
 #include "Debug/DVAssert.h"
 #include "FileSystem/FilePath.h"
 
-#include <QFileInfo>
+#include <QDir>
 #include <QDirIterator>
 #include <QFile>
-#include <QDir>
-#include <QSet>
+#include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QSet>
+#include <QTimer>
 #include <memory>
 
 using namespace DAVA;
 
-//this function is reimplemented for QSet<QFileInfo> in the class Impl
+// this function is reimplemented for QSet<QFileInfo> in the class Impl
 uint qHash(const QFileInfo& fi, uint seed)
 {
     return qHash(fi.absoluteFilePath().toLower(), seed);
@@ -36,10 +37,16 @@ private slots:
     void OnFileChanged(const QString& path);
 
 private:
+    void FlushPendingChanges();
+    void RescanDirectory(const QString& directory);
     std::tuple<QStringList, QSet<QFileInfo>> CollectFilesAndDirectories(const QDir& dir) const;
     bool ForceRemovePaths(const QStringList& directories);
 
     QFileSystemWatcher* watcher = nullptr;
+    // a bulk copy fires one directoryChanged per batch; the paths are collected
+    // and drained in a single rescan
+    QTimer* pendingTimer = nullptr;
+    QSet<QString> pendingDirectories;
     QSet<QFileInfo> files;
 
     QStringList supportedExtensions;
@@ -81,9 +88,16 @@ QStringList FileSystemCache::GetFiles(const QString& extension) const
 FileSystemCache::Impl::Impl(const QStringList& supportedExtensions_)
     : QObject(nullptr)
     , watcher(new QFileSystemWatcher(this))
+    , pendingTimer(new QTimer(this))
 {
     QObject::connect(watcher, &QFileSystemWatcher::fileChanged, this, &Impl::OnFileChanged);
     QObject::connect(watcher, &QFileSystemWatcher::directoryChanged, this, &Impl::OnDirChanged);
+
+    pendingTimer->setSingleShot(true);
+    pendingTimer->setInterval(300);
+    // no Q_OBJECT in this class: use the functor overload
+    QObject::connect(pendingTimer, &QTimer::timeout, this, [this]()
+                     { FlushPendingChanges(); });
     for (const QString& extension : supportedExtensions_)
     {
         supportedExtensions << extension.toLower();
@@ -190,43 +204,78 @@ void FileSystemCache::Impl::OnFileChanged(const QString& path)
 void FileSystemCache::Impl::OnDirChanged(const QString& path)
 {
     DVASSERT(watcher != nullptr);
-    QDir changedDir(path);
+
+    // remember and drain later: FlushPendingChanges runs once per burst
+    pendingDirectories.insert(path);
+    if (pendingTimer->isActive() == false)
+    {
+        pendingTimer->start();
+    }
+}
+
+void FileSystemCache::Impl::FlushPendingChanges()
+{
+    const QSet<QString> changed = pendingDirectories;
+    pendingDirectories.clear();
+
+    for (const QString& directory : changed)
+    {
+        RescanDirectory(directory);
+    }
+}
+
+void FileSystemCache::Impl::RescanDirectory(const QString& directory)
+{
+    QDir changedDir(directory);
+
+    if (changedDir.exists() == false)
+    {
+        // directory gone: drop its files and its watch
+        QMutableSetIterator<QFileInfo> iter(files);
+        while (iter.hasNext())
+        {
+            const QFileInfo fileInfo = iter.next();
+            if (fileInfo.absoluteFilePath().startsWith(directory))
+            {
+                iter.remove();
+            }
+        }
+        watcher->removePath(directory);
+        directories.removeAll(directory);
+        return;
+    }
+
+    QStringList subDirectories;
+    QSet<QFileInfo> filesInDirectory;
+    std::tie(subDirectories, filesInDirectory) = CollectFilesAndDirectories(changedDir);
+    subDirectories << directory;
+
+    // reconcile from the fresh scan instead of stat-ing every cached file
     QMutableSetIterator<QFileInfo> iter(files);
     while (iter.hasNext())
     {
-        QFileInfo fileInfo = iter.next();
-        QString absoluteFilePath = fileInfo.absoluteFilePath();
-        if (absoluteFilePath.startsWith(path) && !QFile::exists(absoluteFilePath))
+        const QFileInfo fileInfo = iter.next();
+        if (fileInfo.absoluteFilePath().startsWith(directory) && filesInDirectory.contains(fileInfo) == false)
         {
             iter.remove();
         }
     }
 
-    QStringList watchedDirectories = watcher->directories();
-    for (const QString& dirPath : watchedDirectories)
+    const QSet<QString> watched = watcher->directories().toSet();
+    QSet<QString> directoriesToAdd;
+    for (const QString& subDirectory : subDirectories)
     {
-        QFileInfo fileInfo(dirPath);
-        if (!fileInfo.isDir())
+        if (watched.contains(subDirectory) == false)
         {
-            watcher->removePath(dirPath);
+            directoriesToAdd.insert(subDirectory);
         }
     }
-
-    if (changedDir.exists())
+    if (directoriesToAdd.isEmpty() == false)
     {
-        QStringList subDirectories;
-        QSet<QFileInfo> filesInDirectory;
-
-        std::tie(subDirectories, filesInDirectory) = CollectFilesAndDirectories(changedDir);
-        QSet<QString> directoriesToAdd = subDirectories.toSet().subtract(watcher->directories().toSet());
-
-        for (const QString& directory : directoriesToAdd)
-        {
-            watcher->addPath(directory);
-        }
-
-        files += filesInDirectory;
+        watcher->addPaths(directoriesToAdd.values());
     }
+
+    files += filesInDirectory;
 }
 
 std::tuple<QStringList, QSet<QFileInfo>> FileSystemCache::Impl::CollectFilesAndDirectories(const QDir& dir) const
