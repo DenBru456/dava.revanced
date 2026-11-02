@@ -17,11 +17,11 @@ PARENT_DIRECTORY  = os.path.dirname(SCRIPT_DIRECTORY)
 DEPLOY_DIRECTORY  = os.path.join(SCRIPT_DIRECTORY, "_build")
 
 BUILD_TOOLS = {
-    "ResourceEditor": False,
+    "ResourceEditor": True,
     "FormatEditorCLI": False,
     "ResourceDLC": False,
     "ResourceDVPL": False,
-    "ParticlesGod": True,
+    "ParticlesGod": False,
 }
 
 def RunCommand(cmd, cwd=None):
