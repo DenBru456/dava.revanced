@@ -25,6 +25,8 @@
 #include <QToolBar>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QAbstractItemView>
+#include <QListView>
 #include <QHeaderView>
 #include <QProgressBar>
 #include <QLabel>
@@ -190,6 +192,25 @@ void LibraryWidget::SetupToolbar()
         filesTypeFilter->addItem(LibraryWidgetDetail::fileTypeValues[i].name);
     }
     filesTypeFilter->setCurrentIndex(0);
+
+    // NOTE: the popup is a flat 10..20 entry list and must not be built as a scrollable view: Qt
+    // reserves a band in the container for the scroller buttons, and the theme draws nothing there,
+    // which is the empty strip under the last entry. The theme also gives every item 2px of vertical
+    // margin, so the rows are taller than the hint the popup height was computed from
+    filesTypeFilter->setMaxVisibleItems(static_cast<int>(LibraryWidgetDetail::fileTypeValues.size()));
+
+    QAbstractItemView* filesTypeFilterView = filesTypeFilter->view();
+    if (filesTypeFilterView != nullptr)
+    {
+        // NOTE: setUniformItemSizes belongs to QListView, the non-editable popup is one
+        QListView* filesTypeFilterList = qobject_cast<QListView*>(filesTypeFilterView);
+        if (filesTypeFilterList != nullptr)
+        {
+            filesTypeFilterList->setUniformItemSizes(true);
+        }
+
+        filesTypeFilterView->setStyleSheet(QStringLiteral("QComboBox QAbstractItemView::item { margin: 0px 0px 0px 0px; }"));
+    }
 
     QIcon asListIcon(QString::fromUtf8(":/QtIconsTextureDialog/view_list.png"));
     actionViewAsList = new QAction(asListIcon, "View as list", toolbar);
