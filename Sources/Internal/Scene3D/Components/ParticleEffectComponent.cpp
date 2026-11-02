@@ -11,10 +11,50 @@
 #include "Scene3D/Systems/QualitySettingsSystem.h"
 #include "Reflection/ReflectionRegistrator.h"
 #include "Reflection/ReflectedMeta.h"
+#include "FileSystem/FileSystem.h"
+#include "Logger/Logger.h"
 #include <Math/Transform.h>
 
 namespace DAVA
 {
+namespace
+{
+// NOTE: load side safety net for emitter paths. Shipped scenes store physical walks
+// ("../../../../Data/Configs/Particles/...") that do not exist in every project layout, so a missing
+// result is retried as "~res:/Configs/..." through the mounted resource folders. A "~res:/" reference
+// is resolved the same way. Anything that still does not resolve is returned unchanged, so the stock
+// error dialog still fires.
+FilePath ResolveExistingEmitterPath(const FilePath& path)
+{
+    if (path.IsEmpty())
+    {
+        return path;
+    }
+
+    FileSystem* fs = FileSystem::Instance();
+    if (fs->Exists(path))
+    {
+        return path;
+    }
+
+    const String& abs = path.GetStringValue();
+    String::size_type pos = abs.rfind("/Configs/");
+    if (pos != String::npos)
+    {
+        FilePath alt("~res:/" + abs.substr(pos + 1)); // 'Configs/Particles/...'
+        if (fs->Exists(alt))
+        {
+            Logger::Warning("[ParticleEffectComponent] emitter yaml '%s' not found, using mount fallback '%s'",
+                            abs.c_str(), alt.GetStringValue().c_str());
+            return alt;
+        }
+    }
+
+    Logger::Warning("[ParticleEffectComponent] emitter yaml '%s' not found, no mount fallback matched",
+                    abs.c_str());
+    return path;
+}
+} // namespace
 DAVA_VIRTUAL_REFLECTION_IMPL(ParticleEffectComponent)
 {
     ReflectionRegistrator<ParticleEffectComponent>::Begin()[M::CantBeCreatedManualyComponent()]
@@ -444,7 +484,14 @@ void ParticleEffectComponent::DeserializeLoadEmitters(KeyedArchive* archive, Ser
         String filename = emitterArch->GetString("emitter.filename");
         if (!filename.empty())
         {
-            emitterInstances[emitterIndex]->SetFilePath(serializationContext->GetScenePath() + filename);
+            if (filename.size() > 6 && filename.compare(0, 6, "~res:/") == 0)
+            {
+                emitterInstances[emitterIndex]->SetFilePath(ResolveExistingEmitterPath(FilePath(filename)));
+            }
+            else
+            {
+                emitterInstances[emitterIndex]->SetFilePath(ResolveExistingEmitterPath(serializationContext->GetScenePath() + filename));
+            }
             FilePath qualityFilepath = emitterInstances[emitterIndex]->GetFilePath();
             if (filepathSelector)
             {
@@ -487,7 +534,14 @@ void ParticleEffectComponent::CollapseOldEffect(SerializationContext* serializat
             continue;
 
         ParticleEmitterInstance* instance = new ParticleEmitterInstance(this);
-        instance->SetFilePath(serializationContext->GetScenePath() + emitterProxy->emitterFilename);
+        if (emitterProxy->emitterFilename.size() > 6 && emitterProxy->emitterFilename.compare(0, 6, "~res:/") == 0)
+        {
+            instance->SetFilePath(ResolveExistingEmitterPath(FilePath(emitterProxy->emitterFilename)));
+        }
+        else
+        {
+            instance->SetFilePath(ResolveExistingEmitterPath(serializationContext->GetScenePath() + emitterProxy->emitterFilename));
+        }
         if (!emitterProxy->emitterFilename.empty())
         {
             FilePath qualityFilepath = emitterInstances[i]->GetFilePath();

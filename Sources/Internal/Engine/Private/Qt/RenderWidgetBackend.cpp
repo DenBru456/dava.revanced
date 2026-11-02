@@ -32,7 +32,7 @@ void Kostil_ForceUpdateCurrentScreen(QWidget* renderWidget, QWindow* wnd, QAppli
         parent->setScreen(application->screens().at(screenNumber));
     }
 }
-} //unnamed namespace
+} // namespace RenderWidgetBackendDetails
 
 RenderWidgetBackend::RenderWidgetBackend(IWindowDelegate* windowDelegate_)
     : windowDelegate(windowDelegate_)
@@ -62,7 +62,12 @@ RenderWidgetBackendImpl<TBase>::RenderWidgetBackendImpl(IWindowDelegate* windowD
 
     this->setFocusPolicy(Qt::StrongFocus);
     this->setSizePolicy(QSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding));
-    this->setMinimumSize(QSize(width, height));
+
+    // the startup size is an initial size, never a minimum: a minimum of width x height keeps
+    // the whole editor at the resolution it was first launched with, so coming back from
+    // fullscreen or from a maximized window drags the layout back to that old size
+    this->resize(static_cast<int>(width), static_cast<int>(height));
+    this->setMinimumSize(QSize(0, 0));
 }
 
 template <typename TBase>
@@ -126,6 +131,12 @@ void RenderWidgetBackendImpl<TBase>::showEvent(QShowEvent* e)
 {
     TBase::showEvent(e);
     windowDelegate->OnVisibilityChanged(true);
+
+    // a hidden widget that comes back can have a different size (fullscreen toggle, alt tab,
+    // maximize), and the render surface only learns the new size from this notification
+    QSize size = this->geometry().size();
+    windowDelegate->OnResized(size.width(), size.height(), IsInFullScreen());
+    resized.Emit(size.width(), size.height());
 }
 
 template <typename TBase>

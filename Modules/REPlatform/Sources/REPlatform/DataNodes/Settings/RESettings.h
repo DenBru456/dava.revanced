@@ -24,6 +24,14 @@ enum class RenderingBackend
     OpenGL
 };
 
+// what the fullscreen toggle does with the editor layout
+enum class eFullscreenMode
+{
+    Hide = 0, // hide the docks, window size untouched
+    Full, // hide the docks and take the whole screen
+    WindowedFull // hide the docks, borderless window covering the screen, no display mode switch
+};
+
 class GeneralSettings : public SettingsNode
 {
 public:
@@ -31,6 +39,14 @@ public:
     bool previewEnabled = false;
     TextureConverter::eConvertQuality compressionQuality = TextureConverter::ECQ_DEFAULT;
     bool showErrorDialog = true;
+    eFullscreenMode fullscreenMode = eFullscreenMode::Full;
+    // Hide uses the first two, Windowed full and Full use all six
+    bool fullscreenHideDocks = true;
+    bool fullscreenHideToolbars = true;
+    bool fullscreenHideMenuBar = true;
+    bool fullscreenHideStatusBar = true;
+    bool fullscreenHideSceneTab = true;
+    bool fullscreenNoBorders = true; // drop the viewport layout margins while fullscreen
     uint32 recentScenesCount = 15;
 
     // Grid & scene settings

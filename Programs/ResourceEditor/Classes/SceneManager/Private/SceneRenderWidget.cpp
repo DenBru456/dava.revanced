@@ -57,7 +57,7 @@ SceneRenderWidget::SceneRenderWidget(DAVA::ContextAccessor* accessor_, DAVA::Ren
     QVBoxLayout* layout = new QVBoxLayout();
     layout->addWidget(tabBar);
     layout->addWidget(renderWidget);
-    layout->setMargin(1);
+    layout->setMargin(0); //1 left a one pixel strip around the view: 1920 wide window, 1918 wide view
     layout->setSpacing(0);
     setLayout(layout);
 
@@ -173,6 +173,49 @@ void SceneRenderWidget::OnRenderWidgetResized(DAVA::uint32 w, DAVA::uint32 h)
     }
 
     DAVA::RefPtr<SceneEditor2> scene = data->GetScene();
+    if (scene.Get() == nullptr)
+    {
+        return;
+    }
+
+    scene->SetViewportRect(dava3DView->GetRect());
+}
+
+void SceneRenderWidget::SetViewMargin(int margin)
+{
+    using namespace DAVA;
+
+    margin = (margin < 0) ? 0 : margin;
+    if (dava3DViewMargin == margin)
+    {
+        return;
+    }
+
+    dava3DViewMargin = margin;
+
+    if (dava3DView.Get() == nullptr || davaUIScreen.Get() == nullptr)
+    {
+        return;
+    }
+
+    // NOTE: the inset is a control offset, not a layout margin, so it is applied to the 3D view itself
+    const Vector2 screenSize = davaUIScreen->GetSize();
+    dava3DView->SetPosition(Vector2(static_cast<float32>(dava3DViewMargin), static_cast<float32>(dava3DViewMargin)));
+    dava3DView->SetSize(Vector2(screenSize.x - 2.0f * dava3DViewMargin, screenSize.y - 2.0f * dava3DViewMargin));
+
+    DataContext* ctx = accessor->GetActiveContext();
+    if (ctx == nullptr)
+    {
+        return;
+    }
+
+    SceneData* data = ctx->GetData<SceneData>();
+    if (data == nullptr)
+    {
+        return;
+    }
+
+    RefPtr<SceneEditor2> scene = data->GetScene();
     if (scene.Get() == nullptr)
     {
         return;

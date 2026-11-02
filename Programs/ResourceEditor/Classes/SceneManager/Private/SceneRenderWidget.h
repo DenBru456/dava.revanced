@@ -41,6 +41,15 @@ public:
         virtual void OnDrop(QObject* target, QDropEvent* event) = 0;
     };
 
+    // NOTE: default inset of the 3D view inside the render widget. A borderless fullscreen mode sets 0,
+    // leaving the mode restores this value.
+    enum
+    {
+        DefaultViewMargin = 3
+    };
+
+    void SetViewMargin(int margin);
+
     SceneRenderWidget(DAVA::ContextAccessor* accessor, DAVA::RenderWidget* renderWidget, IWidgetDelegate* widgetDelegate);
     ~SceneRenderWidget();
 
@@ -66,7 +75,7 @@ private:
     DAVA::RefPtr<DAVA::UIScreen> davaUIScreen;
     DAVA::RefPtr<DAVA::UI3DView> dava3DView;
     const int davaUIScreenID = 0;
-    const int dava3DViewMargin = 3;
+    int dava3DViewMargin = DefaultViewMargin;
 
     DAVA::QtConnections connections;
     DAVA::RenderWidget* renderWidget = nullptr;
