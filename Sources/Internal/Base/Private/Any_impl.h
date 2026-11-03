@@ -99,7 +99,15 @@ const T& Any::Get() const
     if (CanGet<T>())
         return anyStorage.GetAuto<T>();
 
-    DAVA_THROW(Exception, "Any:: can't be get as requested T");
+    // A bare "can't be get as requested T" is useless when the same any is
+    // requested from dozens of call sites. Name both sides of the mismatch.
+    const Type* storedType = GetType();
+    const Type* requestedType = Type::Instance<T>();
+    String message = "Any:: can't be get as requested T: stored ";
+    message += (storedType != nullptr) ? storedType->GetName() : "<empty>";
+    message += ", requested ";
+    message += requestedType->GetName();
+    DAVA_THROW(Exception, message);
 }
 
 template <typename T>

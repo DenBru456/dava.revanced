@@ -20,6 +20,7 @@
 
 #include <QtHelpers/CrashDumpHandler.h>
 
+#include <Debug/Backtrace.h>
 #include <Debug/DVAssert.h>
 #include <Engine/Engine.h>
 #include <Engine/EngineContext.h>
@@ -766,7 +767,33 @@ public:
         }
         catch (const Exception& e)
         {
-            Logger::Error("Operation (%d) call failed: %s", operationId, e.what());
+            // DAVA::Exception already carries the throw site and a callstack
+            // captured at construction (Debug::GetBacktrace). DAVA::Debug::
+            // GetBacktraceString symbolizes it through dbghelp, so with PDBs
+            // present (Debug build) the log names the exact function.
+            const AnyFn::Params& params = fn.GetInvokeParams();
+            String signature = (params.retType != nullptr) ? params.retType->GetName() : "void";
+            signature += " (";
+            for (size_t i = 0; i < params.argsType.size(); ++i)
+            {
+                if (i > 0)
+                    signature += ", ";
+                if (params.argsType[i] != nullptr)
+                    signature += params.argsType[i]->GetName();
+            }
+            signature += ")";
+
+            Logger::Error("Operation (%d) call failed: %s\n"
+                          "  handler: %s\n"
+                          "  thrown at: %s:%u\n"
+                          "  callstack:\n%s",
+                          operationId,
+                          e.what(),
+                          signature.c_str(),
+                          e.file.c_str(),
+                          static_cast<uint32>(e.line),
+                          DAVA::Debug::GetBacktraceString(e.callstack).c_str());
+
         }
     }
 
