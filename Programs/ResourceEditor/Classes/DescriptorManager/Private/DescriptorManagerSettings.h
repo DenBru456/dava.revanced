@@ -47,7 +47,7 @@ public:
     bool reactToMissingSource = false;
     DAVA::int32 startupAction = STARTUP_NOTHING;
     bool updateIgnoresHealthy = true;
-    DAVA::int32 sourceCreate = SOURCE_DEFAULT;
+    DAVA::int32 sourceCreate = SOURCE_OFF;
     bool overwriteExistingSource = false;
     // extension of a source file the module has to create (.png or .tga); other extensions mean decode and re-encode
     DAVA::String defaultSourceExtension = ".png";

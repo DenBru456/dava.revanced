@@ -56,7 +56,7 @@ void DescriptorManagerSettings::Load(const PropertiesItem& item)
     startupAction = item.Get<int32>("startupAction", STARTUP_NOTHING);
     // older nodes stored the flag under the Regenerate name
     updateIgnoresHealthy = item.Get<bool>("updateIgnoresHealthy", item.Get<bool>("regenerateIgnoresHealthy", true));
-    sourceCreate = item.Get<int32>("sourceCreate", SOURCE_DEFAULT);
+    sourceCreate = item.Get<int32>("sourceCreate", SOURCE_OFF);
     overwriteExistingSource = item.Get<bool>("overwriteExistingSource", false);
     defaultSourceExtension = item.Get<String>("defaultSourceExtension", String(".png"));
 
@@ -77,7 +77,7 @@ void DescriptorManagerSettings::Load(const PropertiesItem& item)
     }
     if (sourceCreate < SOURCE_EXISTING || sourceCreate > SOURCE_OFF)
     {
-        sourceCreate = SOURCE_DEFAULT;
+        sourceCreate = SOURCE_OFF;
     }
 }
 
