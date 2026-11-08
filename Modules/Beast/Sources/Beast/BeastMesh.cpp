@@ -4,8 +4,58 @@
 #include "Beast/BeastMaterial.h"
 #include "Beast/LandscapeGeometry.h"
 
+#include <Logger/Logger.h>
+#include <Render/Material/NMaterial.h>
+
+#include <cstring>
+
 namespace Beast
 {
+namespace
+{
+const DAVA::uint64 HASH_SEED = 1469598103934665603ull; // FNV-1a 64
+
+void HashBytes(DAVA::uint64& hash, const void* data, size_t size)
+{
+    const DAVA::uint8* bytes = static_cast<const DAVA::uint8*>(data);
+    for (size_t i = 0; i < size; ++i)
+    {
+        hash ^= static_cast<DAVA::uint64>(bytes[i]);
+        hash *= 1099511628211ull;
+    }
+}
+
+void HashInt(DAVA::uint64& hash, DAVA::int32 value)
+{
+    HashBytes(hash, &value, sizeof(value));
+}
+
+void HashFloat(DAVA::uint64& hash, float value)
+{
+    DAVA::uint32 bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    HashBytes(hash, &bits, sizeof(bits));
+}
+
+void HashString(DAVA::uint64& hash, const DAVA::String& value)
+{
+    HashInt(hash, static_cast<DAVA::int32>(value.size()));
+    HashBytes(hash, value.data(), value.size());
+}
+
+DAVA::String ToHex16(DAVA::uint64 value)
+{
+    static const char* digits = "0123456789abcdef";
+    char text[17] = {};
+    for (DAVA::int32 i = 15; i >= 0; --i)
+    {
+        text[i] = digits[value & 0xf];
+        value >>= 4;
+    }
+    return DAVA::String(text);
+}
+}
+
 BeastMesh::BeastMesh(const DAVA::String& name, BeastManager* manager)
     : BeastResource(name, manager)
 {
@@ -13,12 +63,20 @@ BeastMesh::BeastMesh(const DAVA::String& name, BeastManager* manager)
 
 void BeastMesh::InitWithSpeedTreeLeaf(DAVA::RenderBatch* batch, DAVA::int32 partIndex, const DAVA::Matrix4& leafTransform)
 {
-    DVASSERT(mesh == nullptr);
+    if (mesh != nullptr)
+    {
+        return; // this pass already has the finished geometry
+    }
 
     DAVA::PolygonGroup* polygonGroup = batch->GetPolygonGroup();
     if (CheckVertexFormat(polygonGroup))
     {
-        BEAST_VERIFY(ILBBeginMesh(manager->GetILBManager(), STRING_TO_BEAST_STRING(resourceName), &mesh));
+        // the leaf transform is baked into the vertices, and the mesh name
+        // carries the render batch pointer, so the hash covers the result
+        if (BeginBeastMesh(ComputeContentHash(polygonGroup, batch->GetMaterial())) != eBeginResult::Created)
+        {
+            return;
+        }
         AddTranfromedVertices(polygonGroup, leafTransform);
         AddIndices(polygonGroup, batch->GetMaterial());
         textureCoordCount = polygonGroup->textureCoordCount;
@@ -34,12 +92,18 @@ void BeastMesh::InitWithSpeedTreeLeaf(DAVA::RenderBatch* batch, DAVA::int32 part
 
 void BeastMesh::InitWithMeshInstancePart(DAVA::RenderBatch* batch, DAVA::int32 partIndex)
 {
-    DVASSERT(mesh == nullptr);
+    if (mesh != nullptr)
+    {
+        return; // this pass already has the finished geometry
+    }
 
     DAVA::PolygonGroup* polygonGroup = batch->GetPolygonGroup();
     if (CheckVertexFormat(polygonGroup))
     {
-        BEAST_VERIFY(ILBBeginMesh(manager->GetILBManager(), STRING_TO_BEAST_STRING(resourceName), &mesh));
+        if (BeginBeastMesh(ComputeContentHash(polygonGroup, batch->GetMaterial())) != eBeginResult::Created)
+        {
+            return;
+        }
         AddVertices(polygonGroup);
         AddIndices(polygonGroup, batch->GetMaterial());
         textureCoordCount = polygonGroup->textureCoordCount;
@@ -182,7 +246,12 @@ void BeastMesh::InitWithLandscape(LandscapeGeometry* geometry, BeastMaterial* ma
 {
     if (nullptr == mesh)
     {
-        BEAST_VERIFY(ILBBeginMesh(manager->GetILBManager(), STRING_TO_BEAST_STRING(resourceName), &mesh));
+        if (BeginBeastMesh(ComputeContentHash(geometry, material)) != eBeginResult::Created)
+        {
+            // Reused: the landscape is a single 263k-vertex mesh and the next LOD
+            // pass must not push it into Beast again.
+            return;
+        }
         AddVertices(geometry);
         AddIndices(geometry, material);
 
@@ -229,6 +298,151 @@ void BeastMesh::AddUV(LandscapeGeometry* geometry)
         uvData[i] = ILBVec2(texCoord.x, texCoord.y);
     }
     BEAST_VERIFY(ILBAddUVData(mesh, uvData.data(), static_cast<DAVA::int32>(vertexCount)));
+}
+
+BeastMesh::eBeginResult BeastMesh::BeginBeastMesh(DAVA::uint64 contentHash)
+{
+    // The name is the identity Beast caches on, so it has to describe the data.
+    const DAVA::String beastName = DAVA::Format("%s_%s", resourceName.c_str(), ToHex16(contentHash).c_str());
+
+    ILBMeshHandle cached = nullptr;
+    if (ILBFindMesh(manager->GetILBManager(), STRING_TO_BEAST_STRING(beastName), &cached) == ILB_ST_SUCCESS && cached != nullptr)
+    {
+        mesh = cached;
+        // Finalised in an earlier pass: keep the handle, add nothing.
+        return eBeginResult::Reused;
+    }
+
+    const ILBStatus status = ILBBeginMesh(manager->GetILBManager(), STRING_TO_BEAST_STRING(beastName), &mesh);
+    if (status != ILB_ST_SUCCESS || mesh == nullptr)
+    {
+        // Stop here instead of letting AddVertexData / BeginMaterialGroup /
+        // AddTriangleData each fail on a null handle: that turned one bad mesh
+        // into about ten error lines.
+        ILBStringHandle extendedError = nullptr;
+        ILBGetExtendErrorInformation(&extendedError);
+        DAVA::Logger::Error("[BeastMesh] ILBBeginMesh failed for '%s' (status %d): %s",
+                            beastName.c_str(), static_cast<DAVA::int32>(status), ConvertBeastString(extendedError).c_str());
+        mesh = nullptr;
+        return eBeginResult::Failed;
+    }
+
+    return eBeginResult::Created;
+}
+
+DAVA::uint64 BeastMesh::ComputeContentHash(DAVA::PolygonGroup* polygonGroup, DAVA::NMaterial* material) const
+{
+    DAVA::uint64 hash = HASH_SEED;
+    if (polygonGroup == nullptr)
+    {
+        return hash;
+    }
+
+    const DAVA::int32 vertexCount = polygonGroup->GetVertexCount();
+    const DAVA::int32 primitiveCount = polygonGroup->GetPrimitiveCount();
+    const DAVA::int32 format = polygonGroup->GetFormat();
+    HashInt(hash, vertexCount);
+    HashInt(hash, primitiveCount);
+    HashInt(hash, format);
+    HashInt(hash, polygonGroup->textureCoordCount);
+
+    if (material != nullptr)
+    {
+        HashString(hash, DAVA::String(material->GetMaterialName().c_str()));
+    }
+
+    const bool hasNormal = (format & DAVA::EVF_NORMAL) != 0;
+    const bool hasPivot = (format & DAVA::EVF_PIVOT4) != 0;
+
+    DAVA::Vector3 coord;
+    DAVA::Vector3 normal;
+    DAVA::Vector4 pivot;
+    for (DAVA::int32 i = 0; i < vertexCount; ++i)
+    {
+        polygonGroup->GetCoord(i, coord);
+        HashFloat(hash, coord.x);
+        HashFloat(hash, coord.y);
+        HashFloat(hash, coord.z);
+
+        if (hasNormal)
+        {
+            polygonGroup->GetNormal(i, normal);
+            HashFloat(hash, normal.x);
+            HashFloat(hash, normal.y);
+            HashFloat(hash, normal.z);
+        }
+
+        if (hasPivot)
+        {
+            polygonGroup->GetPivot(i, pivot);
+            HashFloat(hash, pivot.x);
+            HashFloat(hash, pivot.y);
+            HashFloat(hash, pivot.z);
+            HashFloat(hash, pivot.w);
+        }
+    }
+
+    DAVA::Vector2 texCoord;
+    for (DAVA::int32 layer = 0; layer < polygonGroup->textureCoordCount; ++layer)
+    {
+        for (DAVA::int32 i = 0; i < vertexCount; ++i)
+        {
+            polygonGroup->GetTexcoord(layer, i, texCoord);
+            HashFloat(hash, texCoord.x);
+            HashFloat(hash, texCoord.y);
+        }
+    }
+
+    DAVA::int32 sourceIndex = 0;
+    const DAVA::int32 indexCount = primitiveCount * 3;
+    for (DAVA::int32 i = 0; i < indexCount; ++i)
+    {
+        polygonGroup->GetIndex(i, sourceIndex);
+        HashInt(hash, sourceIndex);
+    }
+
+    return hash;
+}
+
+DAVA::uint64 BeastMesh::ComputeContentHash(LandscapeGeometry* geometry, BeastMaterial* material) const
+{
+    DAVA::uint64 hash = HASH_SEED;
+    if (geometry == nullptr)
+    {
+        return hash;
+    }
+
+    if (material != nullptr)
+    {
+        HashString(hash, material->GetName());
+    }
+
+    const DAVA::int32 vertexCount = static_cast<DAVA::int32>(geometry->vertices.size());
+    HashInt(hash, vertexCount);
+    HashInt(hash, static_cast<DAVA::int32>(geometry->indices.size()));
+
+    for (const auto& vertex : geometry->vertices)
+    {
+        HashFloat(hash, vertex.position.x);
+        HashFloat(hash, vertex.position.y);
+        HashFloat(hash, vertex.position.z);
+        HashFloat(hash, vertex.texCoord.x);
+        HashFloat(hash, vertex.texCoord.y);
+    }
+
+    for (const DAVA::Vector3& normal : geometry->normals)
+    {
+        HashFloat(hash, normal.x);
+        HashFloat(hash, normal.y);
+        HashFloat(hash, normal.z);
+    }
+
+    for (DAVA::int32 index : geometry->indices)
+    {
+        HashInt(hash, index);
+    }
+
+    return hash;
 }
 
 ILBMeshHandle BeastMesh::GetILBMesh() const

@@ -5,7 +5,10 @@
 #include "Beast/SceneParser.h"
 
 #include <Render/Highlevel/Landscape.h>
+#include <Render/Material/NMaterial.h>
+#include <Render/Material/NMaterialNames.h>
 #include <beastapi/beastinstance.h>
+#include <Logger/Logger.h>
 
 namespace Beast
 {
@@ -23,6 +26,13 @@ void BeastMeshInstance::InitWithRenderBatchAndTransform(DAVA::RenderBatch* batch
         buddyMesh = BeastMesh::FindResourceByName(resourceName);
 
         DVASSERT(buddyMesh);
+        if (buddyMesh == nullptr)
+        {
+            // the mesh upload failed earlier in this pass; creating an instance on a null
+            // mesh handle fails deep in Beast and buries the real message, so stop here
+            DAVA::Logger::Error("[BeastMeshInstance] '%s' has no Beast mesh, instance skipped", resourceName.c_str());
+            return;
+        }
 
         ILBMatrix4x4 beastMatrix = ConvertDavaMatrix(transform);
         BEAST_VERIFY(ILBCreateInstance(manager->GetILBScene(), buddyMesh->GetILBMesh(), STRING_TO_BEAST_STRING(resourceName), &beastMatrix, &meshInstanceHandle));
@@ -38,6 +48,12 @@ void BeastMeshInstance::InitWithLandscape(DAVA::Landscape* landscape, BeastMesh*
         isLandscape = true;
         renderBatch = landscape->GetRenderBatch(0);
         buddyMesh = beastMesh;
+        if (buddyMesh == nullptr)
+        {
+            DAVA::Logger::Error("[BeastMeshInstance] landscape has no Beast mesh, instance skipped");
+            isLandscape = false;
+            return;
+        }
 
         ILBMatrix4x4 beastMatrix = ConvertDavaMatrix(DAVA::Matrix4::IDENTITY);
         BEAST_VERIFY(ILBCreateInstance(manager->GetILBScene(), beastMesh->GetILBMesh(), STRING_TO_BEAST_STRING(resourceName), &beastMatrix, &meshInstanceHandle));
@@ -46,24 +62,52 @@ void BeastMeshInstance::InitWithLandscape(DAVA::Landscape* landscape, BeastMesh*
     }
 }
 
+namespace
+{
+// The illumination flags live in the material only while a scene is being authored.
+// Scene::OptimizeBeforeExport() strips them on save, so a shipped .sc2 carries none
+// of them at all and GetEffectiveFlagValue() answers 0 for every material. The stock
+// implementation read that 0 as "the artist turned it off" and disabled casting,
+// receiving and GI visibility on every single instance, which is why a bake of game
+// content had no shadows, no occlusion and no contrast (a uniform bright wash).
+// Correct reading of the data:
+//   flag present and 0 -> the author disabled it
+//   flag absent         -> keep Beast's default, which is enabled
+bool IsIlluminationFlagExplicitlyOff(DAVA::NMaterial* material, const DAVA::FastName& flagName)
+{
+    for (DAVA::NMaterial* level = material; level != nullptr; level = level->GetParent())
+    {
+        if (level->HasLocalFlag(flagName))
+        {
+            return level->GetLocalFlagValue(flagName) == 0;
+        }
+    }
+
+    return false;
+}
+} // namespace
+
 void BeastMeshInstance::GetCastReceiveShadowOptions(DAVA::RenderBatch* batch)
 {
     DAVA::NMaterial* material = batch->GetMaterial();
+    if (material == nullptr)
+    {
+        return;
+    }
 
     int32 flags = 0;
-    if (!material->GetEffectiveFlagValue(DAVA::NMaterialFlagName::FLAG_ILLUMINATION_SHADOW_CASTER))
+    if (IsIlluminationFlagExplicitlyOff(material, DAVA::NMaterialFlagName::FLAG_ILLUMINATION_SHADOW_CASTER))
     {
         flags |= ILB_RS_CAST_SHADOWS | ILB_RS_VISIBLE_FOR_GI;
     }
 
-    if (!material->GetEffectiveFlagValue(DAVA::NMaterialFlagName::FLAG_ILLUMINATION_SHADOW_RECEIVER))
+    if (IsIlluminationFlagExplicitlyOff(material, DAVA::NMaterialFlagName::FLAG_ILLUMINATION_SHADOW_RECEIVER))
     {
         flags |= ILB_RS_RECEIVE_SHADOWS;
     }
 
     if (flags > 0)
     {
-        // ** DISABLE ** selected flags, using ILB_RSOP_DISABLE
         BEAST_VERIFY(ILBSetRenderStats(meshInstanceHandle, flags, ILB_RSOP_DISABLE));
     }
 }

@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="ISO-8859-1"?>
 <ILConfig>
 
+  <!-- Beast's own defaults for every key we do not have a measured reason to change.
+       Checked against Modules/Beast/Thirdparty/doc/Beast_XML_and_Lua_Reference_Manual.pdf:
+       maxSampleRate 0, minSampleRate 0, contrast 0.1, fgRays 300, fgInterpolationPoints 15,
+       fgEstimatePoints 15. The previous file had contrast 0.01 with maxSampleRate 0, which caps
+       the bake at ONE sample per texel no matter what the quality preset asks for, and
+       fgInterpolationPoints 1 against a documented 15, which is the setting that decides how
+       smooth the indirect light is across a surface. Both were my values, not measurements. -->
+
   <AASettings>
-    <minSampleRate>0</minSampleRate>
-    <maxSampleRate>0</maxSampleRate>
-    <contrast>0.01</contrast>
+    <minSampleRate>2</minSampleRate>
+    <maxSampleRate>4</maxSampleRate>
+    <contrast>0.1</contrast>
   </AASettings>
 
   <RenderSettings>
-    <bias>0</bias>
+    <bias>0.0001</bias>
   </RenderSettings>
 
   <FrameSettings>
@@ -20,22 +28,34 @@
   </FrameSettings>
 
   <GISettings>
-    <enableGI>true</enableGI> 
+    <enableGI>true</enableGI>
     <primaryIntegrator>FinalGather</primaryIntegrator>
     <secondaryIntegrator>PathTracer</secondaryIntegrator>
 
-    <fgRays>600</fgRays>
-    <fgInterpolationPoints>1</fgInterpolationPoints>
-    <fgEstimatePoints>25</fgEstimatePoints>
+    <fgRays>300</fgRays>
+    <fgInterpolationPoints>15</fgInterpolationPoints>
+    <fgEstimatePoints>15</fgEstimatePoints>
+    <fgUseCache>irradiance</fgUseCache>
+    <fgSmooth>1</fgSmooth>
 
     <prepassMaxSampleRate>0</prepassMaxSampleRate>
     <prepassMinSampleRate>0</prepassMinSampleRate>
   </GISettings>
 
   <TextureBakeSettings>
-    <edgeDilation>2</edgeDilation>
+    <edgeDilation>24</edgeDilation>
     <bilinearFilter>true</bilinearFilter>
     <conservativeRasterization>true</conservativeRasterization>
+    <!-- Beast normalises a texture bake to the 0..1 range per shape by default, which forces the
+         brightest texel of every object to white no matter what the lights are set to. The shipped
+         atlases never reach 1.0 (their max is 0.70-0.72), so that is off. -->
+    <Normalize>
+      <normalizeComponent>Shape</normalizeComponent>
+      <normalizeOutput>None</normalizeOutput>
+      <normalizeRange>Max</normalizeRange>
+      <normalizeAlpha>false</normalizeAlpha>
+      <normalizeValues>false</normalizeValues>
+    </Normalize>
   </TextureBakeSettings>
 
 </ILConfig>
