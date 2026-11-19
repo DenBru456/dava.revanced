@@ -1,0 +1,11 @@
+<%s.model>
+	<metaData>
+		<created_by>	TerrainConverter	</created_by>
+	</metaData>
+	<%s>	%s	</%s>
+	<materialNames>	</materialNames>
+	<visibilityBox>
+		<min>	%f %f %f	</min>
+		<max>	%f %f %f	</max>
+	</visibilityBox>
+</%s.model>

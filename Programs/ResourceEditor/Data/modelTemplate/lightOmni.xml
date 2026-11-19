@@ -1,0 +1,17 @@
+	<omniLight>
+		<editorOnly>
+			<hidden>	false	</hidden>
+			<frozen>	false	</frozen>
+		</editorOnly>
+		<metaData />
+		<colour>	%f %f %f	</colour>
+		<position>	%f %f %f	</position>
+		<innerRadius>	%f	</innerRadius>
+		<outerRadius>	%f	</outerRadius>
+		<priority>	%d	</priority>
+		<multiplier>	%f	</multiplier>
+		<dynamic>	%s	</dynamic>
+		<static>	%s	</static>
+		<specular>	%s	</specular>
+		<transform></transform>
+	</omniLight>

@@ -1,0 +1,12 @@
+<root>
+	<fragiles>
+		<entry>
+			<filename>	%s	</filename>
+			<health>	%d	</health>
+			<decayEffect>	none	</decayEffect>
+			<effect>	%s	</effect>
+			<effectHP>	HP_module_0	</effectHP>
+			<effectScale>	1.0	</effectScale>
+		</entry>
+	</fragiles>
+</root>

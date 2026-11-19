@@ -1,0 +1,11 @@
+	<directionalLight>
+		<editorOnly>
+			<hidden>	false	</hidden>
+			<frozen>	false	</frozen>
+		</editorOnly>
+		<metaData />
+		<colour>	%f %f %f	</colour>
+		<direction>	%f %f %f	</direction>
+		<multiplier>	%f	</multiplier>
+		<transform></transform>
+	</directionalLight>

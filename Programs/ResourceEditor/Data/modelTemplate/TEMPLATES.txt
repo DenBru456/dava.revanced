@@ -1,0 +1,46 @@
+modelTemplate: complete set
+===========================
+
+All templates the converter loads, with the placeholder order each one must have.
+Count them against Converter.cpp before swapping anything in.
+
+  model.xml                3: prefix, model name (no extension - .model is in the
+                              template), destructibleState block
+  speedTree.xml            1: tree name (no extension - .spt is in the template)
+  proxy.xml                1: uid
+  proxy.vlo               27: uid, model res, 12 floats, 12 floats, uid
+  water.xml                7: uid, x, z, y, sx, sz, sy
+  water.vlo                8: uid, x, z, y, sx, sz, sy, uid
+  spawnpoint.xml           5: uid, team, preferableType, group, pointNumber
+  botSpawn.xml             8: uid, team, vehicle, botName-or-"", pathID,
+                              performanceTestBot, script, group
+  patrolNode.xml           4: uid, pathID, pointNumber, directive
+  controlpoint.xml         3: radius, pointsPerSecond, maxPointsPerSecond
+  chunk/StrategicPoint.xml 9: baseID, bonusCapture, penaltyLoss,
+                              incomeVictoryPoints, spawnVictoryPointsTime,
+                              capturePoints, pointsPerSecond,
+                              maxPointsPerSecond, radius
+  lightOmni.xml           13: r g b, x y z, inner, outer, priority, multiplier,
+                              dynamic, static, specular
+  lightSpot.xml           17: r g b, x y z, dir x y z, inner, outer, cosCone,
+                              priority, multiplier, dynamic, static, specular
+  lightDirectional.xml     7: r g b, dir x y z, multiplier
+  lightAmbient.xml         4: r g b, multiplier
+  space.settings           4: minX maxX minY maxY
+
+VERIFIED against a real export: model, speedTree, proxy.vlo, all four lights,
+space.settings, spawnpoint, botSpawn, controlpoint, chunk/StrategicPoint (the
+emitted chunk items are byte-identical to these shapes).
+
+RECONSTRUCTED, not verified (no export in hand exercises them): water.xml,
+water.vlo, proxy.xml, patrolNode.xml. Their placeholder ORDER above is what the
+code passes, so the arguments land in the right slots, but the element layout is
+my reading of BW 14.4. Diff them against your originals before trusting water.
+
+THE EXTENSION TRAP
+------------------
+model.xml and speedTree.xml take the model name WITHOUT its extension: the
+converter passes "content/<map>/env_hm_barrels" and "content/<map>/speedTree/fir".
+The ".model" and ".spt" have to be in the template text, exactly as shipped here.
+A package I sent earlier had plain "%s" in both, and the export built from it
+wrote 1344 chunk items pointing at extensionless files - every prop dangling.

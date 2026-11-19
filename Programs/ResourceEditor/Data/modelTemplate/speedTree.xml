@@ -1,0 +1,11 @@
+	<speedtree>
+		<spt>	%s.spt	</spt>
+		<seed>	1	</seed>
+		<transform>
+			<row0> 1.0 0.0 0.0 </row0>
+			<row1> 0.0 1.0 0.0 </row1>
+			<row2> 0.0 0.0 1.0 </row2>
+			<row3> 0.0 0.0 0.0 </row3>
+		</transform>
+		<reflectionVisible>	false	</reflectionVisible>
+	</speedtree>

@@ -1,0 +1,19 @@
+	<spotLight>
+		<editorOnly>
+			<hidden>	false	</hidden>
+			<frozen>	false	</frozen>
+		</editorOnly>
+		<metaData />
+		<colour>	%f %f %f	</colour>
+		<position>	%f %f %f	</position>
+		<direction>	%f %f %f	</direction>
+		<innerRadius>	%f	</innerRadius>
+		<outerRadius>	%f	</outerRadius>
+		<cosConeAngle>	%f	</cosConeAngle>
+		<priority>	%d	</priority>
+		<multiplier>	%f	</multiplier>
+		<dynamic>	%s	</dynamic>
+		<static>	%s	</static>
+		<specular>	%s	</specular>
+		<transform></transform>
+	</spotLight>

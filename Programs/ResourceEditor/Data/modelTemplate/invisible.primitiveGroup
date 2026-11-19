@@ -1,0 +1,7 @@
+			<primitiveGroup>	0
+				<material>
+					<identifier>	%s	</identifier>
+					<collisionFlags>	%d	</collisionFlags>
+					<materialKind>	%d	</materialKind>
+				</material>
+			</primitiveGroup>

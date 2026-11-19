@@ -1,0 +1,31 @@
+<_%s.vlo>
+	<proxy>
+		<editorOnly>
+			<hidden>	false	</hidden>
+			<frozen>	false	</frozen>
+		</editorOnly>
+		<metaData />
+		<model>
+			<editorOnly>
+				<hidden>	false	</hidden>
+				<frozen>	false	</frozen>
+			</editorOnly>
+			<metaData />
+			<resource>	%s	</resource>
+			<transform>
+				<row0>	%f %f %f	</row0>
+				<row1>	%f %f %f	</row1>
+				<row2>	%f %f %f	</row2>
+				<row3>	%f %f %f	</row3>
+			</transform>
+			<castsShadow>	true	</castsShadow>
+			<reflectionVisible>	false	</reflectionVisible>
+			<worldTransform>
+				<row0>	%f %f %f	</row0>
+				<row1>	%f %f %f	</row1>
+				<row2>	%f %f %f	</row2>
+				<row3>	%f %f %f	</row3>
+			</worldTransform>
+		</model>
+	</proxy>
+</_%s.vlo>

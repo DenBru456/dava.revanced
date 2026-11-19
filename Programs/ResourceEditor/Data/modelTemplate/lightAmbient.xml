@@ -1,0 +1,10 @@
+	<ambientLight>
+		<editorOnly>
+			<hidden>	false	</hidden>
+			<frozen>	false	</frozen>
+		</editorOnly>
+		<metaData />
+		<colour>	%f %f %f	</colour>
+		<multiplier>	%f	</multiplier>
+		<transform></transform>
+	</ambientLight>

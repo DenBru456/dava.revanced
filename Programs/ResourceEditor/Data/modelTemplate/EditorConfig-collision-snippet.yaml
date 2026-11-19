@@ -1,0 +1,39 @@
+# Append these two entries to your PROJECT's EditorConfig.yaml
+# (the same file that has LandscapeCustomColors / LandscapeAngle).
+# The root of EditorConfig.yaml is a LIST of entries with name/type/default.
+# This is what fills the "Collision Type" / "Collision Type Crashed"
+# dropdowns in ResourceEditor (DebugDrawModule reads them at project open).
+#
+# !! ids MUST equal the TerrainConverter's eModelPreset enum values.
+# Verify in your plugin tree (ModelTemplate/Model.h):
+#   0 NoCollision, 1 Tree, 2 Bush, 3 FragileProj, 4 FragileNProj,
+#   5 Falling, 6 Building, 7 InvisibleWall, 8 SpeedTree, 9 Water.
+# Names "Water" and "SpeedTree" are matched EXACTLY by SceneValidation.
+
+- name: CollisionType
+  type: CollisionTypeMap
+  default: 0
+  map:
+    - [No Collision, 0]
+    - [Tree, 1]
+    - [Bush, 2]
+    - [Fragile Proj, 3]
+    - [Fragile ^Proj, 4]
+    - [Falling, 5]
+    - [Building, 6]
+    - [Invisible Wall, 7]
+    - [SpeedTree, 8]
+    - [Water, 9]
+
+- name: CollisionTypeCrashed
+  type: CollisionTypeMap
+  default: 0
+  map:
+    - [No Collision, 0]
+    - [Tree, 1]
+    - [Bush, 2]
+    - [Fragile Proj, 3]
+    - [Fragile ^Proj, 4]
+    - [Falling, 5]
+    - [Building, 6]
+    - [Invisible Wall, 7]

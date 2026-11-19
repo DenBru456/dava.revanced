@@ -1,0 +1,14 @@
+<root>
+	<trees>
+		<entry>
+			<filename>	%s	</filename>
+			<health>	%d	</health>
+			<density>	%f	</density>
+			<physicParams>	%s	</physicParams>
+			<lifetimeEffect>	none	</lifetimeEffect>
+			<lifetimeEffectChance>	0.0	</lifetimeEffectChance>
+			<fractureEffect>	deadtreeFracture	</fractureEffect>
+			<touchdownEffect>	none	</touchdownEffect>
+		</entry>
+	</trees>
+</root>

@@ -1,0 +1,13 @@
+<root>
+	<fallingAtoms>
+		<entry>
+			<filename>	%s	</filename>
+			<health>	%d	</health>
+			<physicParams>	%s	</physicParams>
+			<lifetimeEffect>	none	</lifetimeEffect>
+			<fractureEffect>	none	</fractureEffect>
+			<touchdownEffect>	none	</touchdownEffect>
+			<effectScale>	1.0	</effectScale>
+		</entry>
+	</fallingAtoms>
+</root>

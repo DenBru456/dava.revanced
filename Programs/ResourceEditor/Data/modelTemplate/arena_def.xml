@@ -1,0 +1,24 @@
+<%(mapName)>
+  <geometry>	spaces/%(mapName)	</geometry>
+  <boundingBox>
+    <bottomLeft>	%(minX) %(minY)	</bottomLeft>
+    <upperRight>	%(maxX) %(maxY)	</upperRight>
+  </boundingBox>
+  <gameplayTypes>
+    <supremacy>
+      <controlPoints>
+%(pointsBegin)        <controlPoint>
+          <baseID>	%(baseID)	</baseID>
+          <bonusCapture>	%(bonusCapture)	</bonusCapture>
+          <penaltyLoss>	%(penaltyLoss)	</penaltyLoss>
+          <incomeVictoryPoints>	%(incomeVictoryPoints)	</incomeVictoryPoints>
+          <spawnVictoryPointsTime>	%(spawnVictoryPointsTime)	</spawnVictoryPointsTime>
+          <capturePoints>	%(capturePoints)	</capturePoints>
+          <pointsPerSecond>	%(pointsPerSecond)	</pointsPerSecond>
+          <maxPointsPerSecond>	%(maxPointsPerSecond)	</maxPointsPerSecond>
+          <radius>	%(radius)	</radius>
+        </controlPoint>
+%(pointsEnd)      </controlPoints>
+    </supremacy>
+  </gameplayTypes>
+</%(mapName)>

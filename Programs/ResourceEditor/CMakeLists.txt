@@ -7,7 +7,7 @@ project               ( ResourceEditor )
 get_filename_component( FRAMEWORK_PATH "${CMAKE_CURRENT_LIST_DIR}/../../" ABSOLUTE)
 get_filename_component( RE_PATH "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
 
-set (ADD_TERRAIN_PLUGIN false)
+set (ADD_TERRAIN_PLUGIN true)
 if (ADD_TERRAIN_PLUGIN)
 set                   ( WARNINGS_AS_ERRORS false )
 else()
@@ -48,7 +48,13 @@ list( APPEND DAVA_COMPONENTS DAVA_USE_RENDERSTATS )
 find_package(DavaFramework REQUIRED COMPONENTS ${DAVA_COMPONENTS})
 
 if (WIN32 AND ADD_TERRAIN_PLUGIN)
-  add_plugin(TerrainConverter "${FRAMEWORK_PATH}/Programs/REPlugins/TerrainConverter")
+   # TerrainConverter is built as a STATIC module and merged into the exe.
+  # Do NOT use add_plugin() here: it saves/restores the global property list
+  # (including TARGET_MODULES_LIST) around add_subdirectory, so a STATIC
+  # module added through it would never be linked into the app.
+  # add_module_subdirectory lets the module append itself to
+  # TARGET_MODULES_LIST, which setup_main_executable() links whole-archive.
+  add_module_subdirectory(TerrainConverter "${FRAMEWORK_PATH}/Programs/REPlugins/TerrainConverter")
 endif()
 
 include_directories (${CMAKE_CURRENT_BINARY_DIR})

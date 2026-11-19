@@ -1,0 +1,17 @@
+			<primitiveGroup>	%d
+				<material>
+					<identifier>	%s	</identifier>
+					<fx>	shaders/std_effects/lightonly.fx	</fx>
+					<collisionFlags>	%d	</collisionFlags>
+					<materialKind>	%d	</materialKind>
+					<property>	alphaTestEnable
+						<Bool>	%s	</Bool>
+					</property>
+					<property>	doubleSided
+						<Bool>	%s	</Bool>
+					</property>
+					<property>	diffuseMap
+						<Texture>	%s	</Texture>
+					</property>
+				</material>
+			</primitiveGroup>
