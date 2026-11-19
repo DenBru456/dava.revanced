@@ -8,6 +8,7 @@
 #include <FileSystem/FileSystem.h>
 #include <FileSystem/YamlNode.h>
 #include <FileSystem/YamlParser.h>
+#include <Logger/Logger.h>
 #include <Scene3D/Systems/QualitySettingsSystem.h>
 #include <Sound/SoundSystem.h>
 
@@ -15,6 +16,30 @@ namespace DAVA
 {
 namespace ProjectResourcesDetails
 {
+// quality.yaml used to be read only from <project>/DataSource/quality.yaml. A project without a
+// DataSource folder (game content that only has Data/) therefore loaded nothing, and
+// QualitySettingsSystem::Load() returns silently when the file is missing, which left the quality
+// dialog with empty Textures / Materials / Sounds lists. Data/ is the TOP resource folder, so it
+// is tried first, exactly like ~res:/ resolves; FileSystem::Exists() and the YAML reader both
+// accept a packed quality.yaml.dvpl, so either form is found.
+FilePath FindQualityConfig(const ProjectManagerData* data)
+{
+    const FilePath candidates[] = {
+        data->GetDataPath() + "quality.yaml",
+        data->GetDataSourcePath() + "quality.yaml",
+    };
+
+    FileSystem* fileSystem = GetEngineContext()->fileSystem;
+    for (const FilePath& candidate : candidates)
+    {
+        if (fileSystem->Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+    return FilePath();
+}
+
 Vector<String> LoadMaterialQualities(FilePath fxPath)
 {
     Vector<String> qualities;
@@ -123,7 +148,18 @@ void ProjectResources::LoadProject(const FilePath& incomePath)
 
         ProjectResourcesDetails::LoadMaterialTemplatesInfo(data->materialTemplatesInfo);
 
-        QualitySettingsSystem::Instance()->Load(data->projectPath + "DataSource/quality.yaml");
+        const FilePath qualityConfig = ProjectResourcesDetails::FindQualityConfig(data);
+        if (qualityConfig.IsEmpty())
+        {
+            Logger::Warning("[Project] quality.yaml not found in %s or %s, the quality lists stay empty",
+                            data->GetDataPath().GetAbsolutePathname().c_str(),
+                            data->GetDataSourcePath().GetAbsolutePathname().c_str());
+        }
+        else
+        {
+            Logger::Info("[Project] quality config: %s", qualityConfig.GetAbsolutePathname().c_str());
+            QualitySettingsSystem::Instance()->Load(qualityConfig);
+        }
 
         const EngineContext* engineCtx = accessor->GetEngineContext();
         engineCtx->soundSystem->InitFromQualitySettings();

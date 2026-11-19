@@ -17,6 +17,7 @@
 #include <TArc/Utils/Utils.h>
 #include <QtHelpers/HelperFunctions.h>
 
+#include <Logger/Logger.h>
 #include <Reflection/ReflectedType.h>
 #include <Render/Image/ImageFormatInterface.h>
 #include <Render/RenderBase.h>
@@ -25,8 +26,6 @@
 #include <QToolBar>
 #include <QLineEdit>
 #include <QComboBox>
-#include <QAbstractItemView>
-#include <QListView>
 #include <QHeaderView>
 #include <QProgressBar>
 #include <QLabel>
@@ -36,9 +35,70 @@
 #include <QMenu>
 #include <QAction>
 #include <QFileInfo>
+#include <QDir>
 
 namespace LibraryWidgetDetail
 {
+// A scene may be stored as <name>.sc2 or packed as <name>.sc2.dvpl. The engine only reads
+// packed files when it is asked for the PLAIN name (File::Create falls back to <name>.dvpl),
+// so every consumer below gets the plain .sc2 path even when the Library entry is the .dvpl.
+bool IsPackedScene(const DAVA::FilePath& path)
+{
+    if (!path.IsEqualToExtension(".dvpl"))
+    {
+        return false;
+    }
+
+    // the part before ".dvpl" must itself be a .sc2 (extension compare is case insensitive,
+    // exactly like FilePath::IsEqualToExtension)
+    DAVA::FilePath inner(path);
+    inner.TruncateExtension();
+    return inner.IsEqualToExtension(".sc2");
+}
+
+bool IsSceneFile(const DAVA::FilePath& path)
+{
+    return path.IsEqualToExtension(".sc2") || IsPackedScene(path);
+}
+
+DAVA::FilePath PlainScenePath(const DAVA::FilePath& path)
+{
+    if (IsPackedScene(path))
+    {
+        DAVA::FilePath plain(path);
+        plain.TruncateExtension(); // x.sc2.dvpl -> x.sc2
+        return plain;
+    }
+    return path;
+}
+
+// Where the Library starts browsing. It used to be <project>/DataSource/3d/ unconditionally;
+// when that folder does not exist (a project that only has Data/, e.g. unpacked game content)
+// QFileSystemModel has no such index, setRootIndex() gets an invalid one and the view shows the
+// whole drive. Walk from the most specific folder to the least specific and take the first one
+// that is really on disk, so the tree always opens inside the project.
+QString FindLibraryRoot(const DAVA::ProjectManagerData* projectData)
+{
+    const QString projectDir = QString::fromStdString(projectData->GetProjectPath().GetAbsolutePathname());
+    const QString candidates[] = {
+        QString::fromStdString(projectData->GetDataSource3DPath().GetAbsolutePathname()), // DataSource/3d/
+        projectDir + "Data/3d/", // shipped layout, packed .sc2.dvpl scenes live here
+        QString::fromStdString(projectData->GetDataSourcePath().GetAbsolutePathname()), // DataSource/
+        QString::fromStdString(projectData->GetDataPath().GetAbsolutePathname()), // Data/
+    };
+
+    for (const QString& candidate : candidates)
+    {
+        if (QDir(candidate).exists())
+        {
+            return candidate;
+        }
+    }
+
+    // nothing of the usual layout exists: the project folder itself is still better than the drive root
+    return projectDir;
+}
+
 QStringList GetExtensions(DAVA::ImageFormat imageFormat)
 {
     QStringList extList;
@@ -146,6 +206,7 @@ void LibraryWidget::SetupFileTypes()
     allFiles.filter << "*.3ds";
     allFiles.filter << "*.obj";
     allFiles.filter << "*.sc2";
+    allFiles.filter << "*.sc2.dvpl";
     allFiles.filter << sourceImagesList;
 
     LibraryWidgetDetail::fileTypeValues.reserve(10);
@@ -156,7 +217,8 @@ void LibraryWidget::SetupFileTypes()
            << "*.fbx"
            << "*.3ds"
            << "*.obj"
-           << "*.sc2";
+           << "*.sc2"
+           << "*.sc2.dvpl";
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("Models", models));
 
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("Source Textures", sourceImagesList));
@@ -166,7 +228,8 @@ void LibraryWidget::SetupFileTypes()
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("3DS", "*.3ds"));
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("OBJ", "*.obj"));
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("DAE", "*.dae"));
-    LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("SC2", "*.sc2"));
+    LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("SC2", QStringList() << "*.sc2"
+                                                                                                     << "*.sc2.dvpl"));
     LibraryWidgetDetail::fileTypeValues.push_back(LibraryWidgetDetail::FileType("TEX", QString("*") + DAVA::TextureDescriptor::GetDescriptorExtension().c_str()));
 
     for (auto formatType : DAVA::TextureDescriptor::sourceTextureTypes)
@@ -192,25 +255,6 @@ void LibraryWidget::SetupToolbar()
         filesTypeFilter->addItem(LibraryWidgetDetail::fileTypeValues[i].name);
     }
     filesTypeFilter->setCurrentIndex(0);
-
-    // NOTE: the popup is a flat 10..20 entry list and must not be built as a scrollable view: Qt
-    // reserves a band in the container for the scroller buttons, and the theme draws nothing there,
-    // which is the empty strip under the last entry. The theme also gives every item 2px of vertical
-    // margin, so the rows are taller than the hint the popup height was computed from
-    filesTypeFilter->setMaxVisibleItems(static_cast<int>(LibraryWidgetDetail::fileTypeValues.size()));
-
-    QAbstractItemView* filesTypeFilterView = filesTypeFilter->view();
-    if (filesTypeFilterView != nullptr)
-    {
-        // NOTE: setUniformItemSizes belongs to QListView, the non-editable popup is one
-        QListView* filesTypeFilterList = qobject_cast<QListView*>(filesTypeFilterView);
-        if (filesTypeFilterList != nullptr)
-        {
-            filesTypeFilterList->setUniformItemSizes(true);
-        }
-
-        filesTypeFilterView->setStyleSheet(QStringLiteral("QComboBox QAbstractItemView::item { margin: 0px 0px 0px 0px; }"));
-    }
 
     QIcon asListIcon(QString::fromUtf8(":/QtIconsTextureDialog/view_list.png"));
     actionViewAsList = new QAction(asListIcon, "View as list", toolbar);
@@ -314,10 +358,10 @@ void LibraryWidget::SelectionChanged(const QItemSelection& selected, const QItem
     const QModelIndex index = selected.indexes().first();
     QFileInfo fileInfo = filesModel->fileInfo(index);
 
-    DAVA::FilePath selectedPath = fileInfo.filePath().toStdString();
+    DAVA::FilePath selectedPath = LibraryWidgetDetail::PlainScenePath(DAVA::FilePath(fileInfo.filePath().toStdString()));
     libraryData->selectedPath = selectedPath;
 
-    if (selectedPath.IsEqualToExtension(".sc2"))
+    if (LibraryWidgetDetail::IsSceneFile(selectedPath))
     {
         PythonPluginsSingleton* instance = PythonPluginsSingleton::GetInstance();
         instance->SetLastLibrarySelectedFileSc2(selectedPath.GetAbsolutePathname());
@@ -327,7 +371,7 @@ void LibraryWidget::SelectionChanged(const QItemSelection& selected, const QItem
 void LibraryWidget::fileDoubleClicked(const QModelIndex& index)
 {
     QFileInfo fileInfo = filesModel->fileInfo(index);
-    DAVA::FilePath path = fileInfo.absoluteFilePath().toStdString();
+    DAVA::FilePath path = LibraryWidgetDetail::PlainScenePath(DAVA::FilePath(fileInfo.absoluteFilePath().toStdString()));
     emit DoubleClicked(path);
 }
 
@@ -346,7 +390,7 @@ void LibraryWidget::ShowContextMenu(const QPoint& point)
     QVariant fileInfoAsVariant = QVariant::fromValue<QFileInfo>(fileInfo);
 
     DAVA::FilePath pathname = fileInfo.absoluteFilePath().toStdString();
-    if (pathname.IsEqualToExtension(".sc2"))
+    if (LibraryWidgetDetail::IsSceneFile(pathname))
     {
         DAVA::QtAction* actionAdd = new DAVA::QtAction(contextAccessor, "Add Model", &contextMenu);
         DAVA::FieldDescriptor fieldDescr;
@@ -433,7 +477,7 @@ void LibraryWidget::OnAddModel()
     QVariant indexAsVariant = qobject_cast<QAction*>(sender())->data();
     const QFileInfo fileInfo = indexAsVariant.value<QFileInfo>();
 
-    emit AddSceneRequested(fileInfo.absoluteFilePath().toStdString());
+    emit AddSceneRequested(LibraryWidgetDetail::PlainScenePath(DAVA::FilePath(fileInfo.absoluteFilePath().toStdString())));
 }
 
 void LibraryWidget::OnEditModel()
@@ -441,7 +485,7 @@ void LibraryWidget::OnEditModel()
     QVariant indexAsVariant = qobject_cast<QAction*>(sender())->data();
     const QFileInfo fileInfo = indexAsVariant.value<QFileInfo>();
 
-    emit EditSceneRequested(fileInfo.absoluteFilePath().toStdString());
+    emit EditSceneRequested(LibraryWidgetDetail::PlainScenePath(DAVA::FilePath(fileInfo.absoluteFilePath().toStdString())));
 }
 
 void LibraryWidget::OnConvertDae()
@@ -499,7 +543,13 @@ void LibraryWidget::OnProjectChanged(const DAVA::Any& projectFieldValue)
     {
         setEnabled(true);
 
-        rootPathname = QString::fromStdString(projectData->GetDataSource3DPath().GetAbsolutePathname());
+        rootPathname = LibraryWidgetDetail::FindLibraryRoot(projectData);
+        const QString preferredRoot = QString::fromStdString(projectData->GetDataSource3DPath().GetAbsolutePathname());
+        if (QDir::cleanPath(rootPathname) != QDir::cleanPath(preferredRoot))
+        {
+            DAVA::Logger::Info("[Library] %s does not exist, browsing %s instead",
+                               projectData->GetDataSource3DPath().GetAbsolutePathname().c_str(), rootPathname.toStdString().c_str());
+        }
 
         filesModel->Load(rootPathname);
         filesView->setRootIndex(filesModel->index(rootPathname));

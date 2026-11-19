@@ -32,6 +32,15 @@ enum class eFullscreenMode
     WindowedFull // hide the docks, borderless window covering the screen, no display mode switch
 };
 
+// how files are compressed inside a saved .dvpl (maps onto DAVA::Compressor::Type)
+enum class eDvplCompression
+{
+    None = 0, // stored as is, still wrapped in the DVPL footer
+    Lz4, // fast, what most shipped content uses
+    Lz4HC, // slower to pack, smaller, same decoder
+    Deflate // RFC1951
+};
+
 class GeneralSettings : public SettingsNode
 {
 public:
@@ -48,6 +57,14 @@ public:
     bool fullscreenHideSceneTab = true;
     bool fullscreenNoBorders = true; // drop the viewport layout margins while fullscreen
     uint32 recentScenesCount = 15;
+
+    // Save scenes as .dvpl: after a save the written .sc2 and .scg are packed into
+    // <name>.sc2.dvpl / <name>.scg.dvpl. The engine opens them transparently.
+    bool saveAsDvpl = false;
+    eDvplCompression dvplCompression = eDvplCompression::Lz4HC;
+    // true: remove the plain .sc2/.scg once the .dvpl was written and verified,
+    // false: keep both (the plain file wins when the editor opens the scene)
+    bool dvplDeletePlainFiles = true;
 
     // Grid & scene settings
     Color gridColorX = Color(0.0f, 1.0f, 0.0f, 1.0f);

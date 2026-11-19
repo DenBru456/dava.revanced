@@ -16,6 +16,14 @@ ENUM_DECLARE(DAVA::RenderingBackend)
     ENUM_ADD_DESCR(static_cast<int>(DAVA::RenderingBackend::OpenGL), "OpenGL");
 }
 
+ENUM_DECLARE(DAVA::eDvplCompression)
+{
+    ENUM_ADD_DESCR(static_cast<int>(DAVA::eDvplCompression::None), "None (stored)");
+    ENUM_ADD_DESCR(static_cast<int>(DAVA::eDvplCompression::Lz4), "LZ4");
+    ENUM_ADD_DESCR(static_cast<int>(DAVA::eDvplCompression::Lz4HC), "LZ4 HC");
+    ENUM_ADD_DESCR(static_cast<int>(DAVA::eDvplCompression::Deflate), "Deflate (RFC1951)");
+}
+
 ENUM_DECLARE(DAVA::eFullscreenMode)
 {
     ENUM_ADD_DESCR(static_cast<int>(DAVA::eFullscreenMode::Hide), "Hide");
@@ -41,6 +49,9 @@ DAVA_VIRTUAL_REFLECTION_IMPL(GeneralSettings)
     .Field("fullscreenHideSceneTab", &GeneralSettings::fullscreenHideSceneTab)[M::DisplayName("FullScreen: hide scene tab")]
     .Field("fullscreenNoBorders", &GeneralSettings::fullscreenNoBorders)[M::DisplayName("No viewport borders (3D view inset)")]
     .Field("recentScenesCount", &GeneralSettings::recentScenesCount)[M::DisplayName("Number of recent scenes"), M::Range(0, 50, 1)]
+    .Field("saveAsDvpl", &GeneralSettings::saveAsDvpl)[M::DisplayName("Save scenes as .dvpl"), M::Group("DVPL")]
+    .Field("dvplCompression", &GeneralSettings::dvplCompression)[M::DisplayName("DVPL compression"), M::Group("DVPL"), M::EnumT<eDvplCompression>()]
+    .Field("dvplDeletePlainFiles", &GeneralSettings::dvplDeletePlainFiles)[M::DisplayName("Delete plain .sc2/.scg after packing"), M::Group("DVPL")]
     .Field("gridColorX", &GeneralSettings::gridColorX)[M::DisplayName("Grid X color"), M::Group("Scene")]
     .Field("gridColorY", &GeneralSettings::gridColorY)[M::DisplayName("Grid Y color"), M::Group("Scene")]
     .Field("gridOtherColors", &GeneralSettings::gridOtherColors)[M::DisplayName("Grid other colors"), M::Group("Scene")]

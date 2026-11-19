@@ -7,6 +7,8 @@
 #include "REPlatform/Commands/RECommandNotificationObject.h"
 #include "REPlatform/Commands/TilemaskEditorCommands.h"
 
+#include "REPlatform/DataNodes/Settings/RESettings.h"
+#include "REPlatform/Scene/Utils/DvplPacker.h"
 #include "REPlatform/Scene/Systems/BeastSystem.h"
 #include "REPlatform/Scene/Systems/CameraSystem.h"
 #include "REPlatform/Scene/Systems/CollisionSystem.h"
@@ -33,15 +35,18 @@
 
 #include <TArc/Utils/RenderContextGuard.h>
 #include <TArc/Core/ContextAccessor.h>
+#include <TArc/Core/Deprecated.h>
 
 #include <QtTools/ConsoleWidget/PointerSerializer.h>
 
 // framework
 #include <Base/BaseTypes.h>
 #include <Command/Command.h>
+#include <Compression/Compressor.h>
 #include <Debug/DVAssert.h>
 #include <Engine/Engine.h>
 #include <Entity/ComponentUtils.h>
+#include <Logger/Logger.h>
 #include <FileSystem/FileSystem.h>
 #include <Reflection/ReflectionRegistrator.h>
 #include <Render/Highlevel/RenderBatchArray.h>
@@ -74,6 +79,51 @@ namespace DAVA
 {
 namespace SceneEditorDetail
 {
+// "Save scenes as .dvpl": Scene::SaveScene writes exactly two files, <name>.sc2 and the
+// geometry beside it, <name>.scg. Pack both after a successful save. A failed pack is a
+// warning only: the scene is already safely on disk in its plain form.
+void PackSavedSceneAsDvpl(const FilePath& scenePath)
+{
+    GeneralSettings* settings = Deprecated::GetDataNode<GeneralSettings>();
+    if (settings == nullptr || !settings->saveAsDvpl)
+    {
+        return;
+    }
+
+    Compressor::Type type = Compressor::Type::Lz4HC;
+    switch (settings->dvplCompression)
+    {
+    case eDvplCompression::None:
+        type = Compressor::Type::None;
+        break;
+    case eDvplCompression::Lz4:
+        type = Compressor::Type::Lz4;
+        break;
+    case eDvplCompression::Lz4HC:
+        type = Compressor::Type::Lz4HC;
+        break;
+    case eDvplCompression::Deflate:
+        type = Compressor::Type::RFC1951;
+        break;
+    }
+
+    FilePath geometryPath(scenePath);
+    geometryPath.ReplaceExtension(".scg");
+
+    const FilePath files[] = { scenePath, geometryPath };
+    for (const FilePath& file : files)
+    {
+        if (!GetEngineContext()->fileSystem->Exists(file))
+        {
+            continue; // a scene without geometry has no .scg
+        }
+        if (!DvplPacker::PackFile(file, type, settings->dvplDeletePlainFiles))
+        {
+            Logger::Warning("[SaveScene] could not pack '%s' as .dvpl, the plain file stays", file.GetAbsolutePathname().c_str());
+        }
+    }
+}
+
 struct EmitterDescriptor
 {
     EmitterDescriptor(ParticleEmitter* emitter_, ParticleLayer* layer, FilePath path, String name)
@@ -238,6 +288,8 @@ SceneFileV2::eError SceneEditor2::SaveScene(const FilePath& path, bool legacy)
 
         // mark current position in command stack as clean
         commandStack->SetClean();
+
+        SceneEditorDetail::PackSavedSceneAsDvpl(path);
     }
 
     if (needToRestoreTilemask)
