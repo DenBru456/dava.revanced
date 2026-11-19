@@ -1,4 +1,5 @@
 #include "Scene3D/Components/StaticOcclusionComponent.h"
+#include "Logger/Logger.h"
 #include "Scene3D/Scene.h"
 #include "Scene3D/Systems/EventSystem.h"
 #include "Scene3D/Systems/GlobalEventSystem.h"
@@ -86,7 +87,16 @@ void StaticOcclusionComponent::Deserialize(KeyedArchive* archive, SerializationC
 {
     if (NULL != archive)
     {
-        boundingBox = archive->GetVariant("soc.aabbox")->AsAABBox3();
+        VariantType* aabboxVariant = archive->GetVariant("soc.aabbox");
+        if (aabboxVariant != nullptr)
+        {
+            boundingBox = aabboxVariant->AsAABBox3();
+        }
+        else
+        {
+            Logger::Warning("[StaticOcclusionComponent] Deserialize: no soc.aabbox in archive, keeping default bbox");
+        }
+
         xSubdivisions = archive->GetUInt32("soc.xsub", 1);
         ySubdivisions = archive->GetUInt32("soc.ysub", 1);
         zSubdivisions = archive->GetUInt32("soc.zsub", 1);
@@ -95,9 +105,19 @@ void StaticOcclusionComponent::Deserialize(KeyedArchive* archive, SerializationC
         placeOnLandscape = archive->GetBool("soc.placeOnLandscape", false);
         if (placeOnLandscape)
         {
-            cellHeightOffset.resize(xSubdivisions * ySubdivisions, 0);
-            DVASSERT(xSubdivisions * ySubdivisions * sizeof(float32) == static_cast<uint32>(archive->GetByteArraySize("soc.cellHeightOffset")));
-            memcpy(&cellHeightOffset.front(), archive->GetByteArray("soc.cellHeightOffset"), xSubdivisions * ySubdivisions * sizeof(float32));
+            const uint32 expectedBytes = xSubdivisions * ySubdivisions * sizeof(float32);
+            const uint32 availableBytes = static_cast<uint32>(archive->GetByteArraySize("soc.cellHeightOffset"));
+            if (availableBytes == expectedBytes)
+            {
+                cellHeightOffset.resize(xSubdivisions * ySubdivisions, 0);
+                memcpy(&cellHeightOffset.front(), archive->GetByteArray("soc.cellHeightOffset"), expectedBytes);
+            }
+            else
+            {
+                cellHeightOffset.clear();
+                Logger::Warning("[StaticOcclusionComponent] Deserialize: soc.cellHeightOffset size mismatch (expected %u bytes, stored %u), skipped",
+                                expectedBytes, availableBytes);
+            }
         }
     }
 
@@ -143,22 +163,41 @@ void StaticOcclusionDataComponent::Deserialize(KeyedArchive* archive, Serializat
 {
     if (NULL != archive)
     {
-        data.bbox = archive->GetVariant("sodc.bbox")->AsAABBox3();
+        VariantType* bboxVariant = archive->GetVariant("sodc.bbox");
+        if (bboxVariant != nullptr)
+        {
+            data.bbox = bboxVariant->AsAABBox3();
+        }
+        else
+        {
+            Logger::Warning("[StaticOcclusionDataComponent] Deserialize: no sodc.bbox in archive, keeping default bbox");
+        }
+
         data.blockCount = archive->GetUInt32("sodc.blockCount", 0);
         data.objectCount = archive->GetUInt32("sodc.objectCount", 0);
         data.sizeX = archive->GetUInt32("sodc.subX", 1);
         data.sizeY = archive->GetUInt32("sodc.subY", 1);
         data.sizeZ = archive->GetUInt32("sodc.subZ", 1);
 
-        auto numElements = data.blockCount * data.objectCount / 32;
-        uint32 dataSize = static_cast<uint32>(sizeof(uint32) * numElements);
+        // Modern scenes do not store "sodc.blockCount" but objectCountReal instead
+        // Always trust the actual stored byte array
+        // size, never a size recomputed from the counts.
         data.SetData(reinterpret_cast<const uint32*>(archive->GetByteArray("sodc.data")), archive->GetByteArraySize("sodc.data"));
 
         if (archive->IsKeyExists("sodc.cellHeightOffset"))
         {
-            data.cellHeightOffset = new float32[data.sizeX * data.sizeY];
-            DVASSERT(data.sizeX * data.sizeY * sizeof(float32) == static_cast<uint32>(archive->GetByteArraySize("sodc.cellHeightOffset")));
-            memcpy(data.cellHeightOffset, archive->GetByteArray("sodc.cellHeightOffset"), data.sizeX * data.sizeY * sizeof(float32));
+            const uint32 expectedBytes = data.sizeX * data.sizeY * sizeof(float32);
+            const uint32 availableBytes = static_cast<uint32>(archive->GetByteArraySize("sodc.cellHeightOffset"));
+            if (availableBytes == expectedBytes && expectedBytes > 0)
+            {
+                data.cellHeightOffset = new float32[data.sizeX * data.sizeY];
+                memcpy(data.cellHeightOffset, archive->GetByteArray("sodc.cellHeightOffset"), expectedBytes);
+            }
+            else
+            {
+                Logger::Warning("[StaticOcclusionDataComponent] Deserialize: sodc.cellHeightOffset size mismatch (expected %u bytes, stored %u), skipped",
+                                expectedBytes, availableBytes);
+            }
         }
     }
 
@@ -206,4 +245,4 @@ void StaticOcclusionDebugDrawComponent::Deserialize(KeyedArchive* archive, Seria
 {
     DVASSERT(false && "Should not Deserialize debug components. Check entity::save");
 }
-}
+} // namespace DAVA

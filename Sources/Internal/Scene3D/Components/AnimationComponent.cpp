@@ -1,13 +1,14 @@
 #include "Scene3D/Components/AnimationComponent.h"
+#include "Logger/Logger.h"
+#include "Scene3D/AnimationData.h"
+#include "Scene3D/Components/ComponentHelpers.h"
 #include "Scene3D/Entity.h"
 #include "Scene3D/Scene.h"
-#include "Scene3D/AnimationData.h"
-#include "Scene3D/Systems/GlobalEventSystem.h"
 #include "Scene3D/Systems/EventSystem.h"
-#include "Scene3D/Components/ComponentHelpers.h"
+#include "Scene3D/Systems/GlobalEventSystem.h"
 
-#include "Reflection/ReflectionRegistrator.h"
 #include "Reflection/ReflectedMeta.h"
+#include "Reflection/ReflectionRegistrator.h"
 
 namespace DAVA
 {
@@ -59,7 +60,10 @@ void AnimationComponent::Serialize(KeyedArchive* archive, SerializationContext* 
 
     if (NULL != archive)
     {
-        archive->SetVariant("animation", VariantType(animation->GetNodeID()));
+        if (animation != nullptr)
+        {
+            archive->SetVariant("animation", VariantType(animation->GetNodeID()));
+        }
         archive->SetUInt32("repeatsCount", repeatsCount);
         archive->SetFloat("animationTimeScale", animationTimeScale);
     }
@@ -69,11 +73,19 @@ void AnimationComponent::Deserialize(KeyedArchive* archive, SerializationContext
 {
     if (NULL != archive)
     {
-        AnimationData* newAnimation = static_cast<AnimationData*>(sceneFile->GetDataBlock(archive->GetVariant("animation")->AsUInt64()));
-        if (animation != newAnimation)
+        VariantType* animationVariant = archive->GetVariant("animation");
+        if (animationVariant != nullptr)
         {
-            SafeRelease(animation);
-            animation = SafeRetain(newAnimation);
+            AnimationData* newAnimation = static_cast<AnimationData*>(sceneFile->GetDataBlock(animationVariant->AsUInt64()));
+            if (animation != newAnimation)
+            {
+                SafeRelease(animation);
+                animation = SafeRetain(newAnimation);
+            }
+        }
+        else
+        {
+            Logger::Warning("[AnimationComponent] Deserialize: no animation key in archive, component left without animation");
         }
         repeatsCount = archive->GetUInt32("repeatsCount", 1);
         animationTimeScale = archive->GetFloat("animationTimeScale", 1.0f);
@@ -142,4 +154,4 @@ void AnimationComponent::SetPlaybackCompleteCallback(Function<void(const Animati
 {
     playbackComplete = callback;
 }
-};
+}; // namespace DAVA

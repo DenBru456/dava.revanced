@@ -4,7 +4,6 @@
 #include "Base/BaseTypes.h"
 #include "Entity/Component.h"
 #include "Reflection/Reflection.h"
-#include "Scene3D/Components/UnregisteredComponent.h"
 #include "Scene3D/Entity.h"
 #include "Scene3D/SceneFile/SerializationContext.h"
 #include "Sound/SoundEvent.h"
@@ -26,15 +25,23 @@ struct SoundComponentElement : public InspBase
     uint32 flags;
 
     bool operator==(const SoundComponentElement& other) const;
+    DAVA_VIRTUAL_REFLECTION(SoundComponentElement, InspBase);
 };
 
-class SoundComponent : public UnregisteredComponent
+class SoundComponent : public Component
 {
 public:
     enum eEventFlags
     {
         FLAG_AUTO_DISTANCE_TRIGGER = 1 << 0
     };
+
+    SoundComponent();
+    ~SoundComponent() override;
+
+    Component* Clone(Entity* toEntity) override;
+    void Serialize(KeyedArchive* archive, SerializationContext* serializationContext) override;
+    void Deserialize(KeyedArchive* archive, SerializationContext* serializationContext) override;
 
     inline uint32 GetEventsCount() const;
     inline SoundEvent* GetSoundEvent(uint32 index) const;
@@ -58,7 +65,7 @@ public:
 protected:
     Vector<SoundComponentElement> events;
 
-    DAVA_VIRTUAL_REFLECTION(SoundComponent, UnregisteredComponent);
+    DAVA_VIRTUAL_REFLECTION(SoundComponent, Component);
 };
 
 // Inline

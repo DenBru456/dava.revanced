@@ -2,6 +2,7 @@
 #include "Base/FastName.h"
 #include "Engine/Engine.h"
 #include "Engine/EngineContext.h"
+#include "Logger/Logger.h"
 #include "Reflection/ReflectedMeta.h"
 #include "Reflection/ReflectionRegistrator.h"
 #include "Scene3D/Components/ComponentHelpers.h"
@@ -17,6 +18,12 @@
 
 namespace DAVA
 {
+DAVA_VIRTUAL_REFLECTION_IMPL(SoundComponentElement)
+{
+    ReflectionRegistrator<SoundComponentElement>::Begin()
+    .End();
+}
+
 template <>
 bool AnyCompare<SoundComponentElement>::IsEqual(const Any& v1, const Any& v2)
 {
@@ -34,7 +41,17 @@ DAVA_VIRTUAL_REFLECTION_IMPL(SoundComponent)
 {
     ReflectionRegistrator<SoundComponent>::Begin()
     .ConstructorByPointer()
+    .Field("events", &SoundComponent::events)[M::DisplayName("Events")]
     .End();
+}
+
+SoundComponent::SoundComponent()
+{
+}
+
+SoundComponent::~SoundComponent()
+{
+    RemoveAllEvents();
 }
 
 void SoundComponent::AddSoundEvent(SoundEvent* _event, uint32 flags /*= 0*/, const Vector3& direction /*= Vector3(1.f, 0.f, 0.f)*/)
@@ -139,5 +156,100 @@ void SoundComponent::SetLocalDirection(const DAVA::Vector3& direction)
     uint32 eventsCount = static_cast<uint32>(events.size());
     for (uint32 i = 0; i < eventsCount; ++i)
         SetLocalDirection(i, direction);
+}
+
+Component* SoundComponent::Clone(Entity* toEntity)
+{
+    SoundComponent* soundComponent = new SoundComponent();
+    soundComponent->SetEntity(toEntity);
+
+    SoundSystem* soundSystem = GetEngineContext()->soundSystem;
+    int32 eventCount = static_cast<int32>(events.size());
+    for (int32 i = 0; i < eventCount; ++i)
+    {
+        if (events[i].soundEvent == nullptr)
+        {
+            Logger::Warning("[SoundComponent] Clone: skipping null event at index %d", i);
+            continue;
+        }
+
+        SoundEvent* clonedEvent = soundSystem->CloneEvent(events[i].soundEvent);
+        soundComponent->AddSoundEvent(clonedEvent, events[i].flags, events[i].localDirection);
+        clonedEvent->Release();
+    }
+
+    return soundComponent;
+}
+
+void SoundComponent::Serialize(KeyedArchive* archive, SerializationContext* serializationContext)
+{
+    Component::Serialize(archive, serializationContext);
+
+    if (archive)
+    {
+        uint32 eventsCount = static_cast<uint32>(events.size());
+        uint32 validEventsCount = 0;
+        for (uint32 i = 0; i < eventsCount; ++i)
+        {
+            if (events[i].soundEvent != nullptr)
+            {
+                ++validEventsCount;
+            }
+        }
+
+        archive->SetUInt32("sc.eventCount", validEventsCount);
+        uint32 outputIndex = 0;
+        for (uint32 i = 0; i < eventsCount; ++i)
+        {
+            if (events[i].soundEvent == nullptr)
+            {
+                continue;
+            }
+
+            KeyedArchive* eventArchive = new KeyedArchive();
+
+            GetEngineContext()->soundSystem->SerializeEvent(events[i].soundEvent, eventArchive);
+            eventArchive->SetUInt32("sce.flags", events[i].flags);
+            eventArchive->SetVector3("sce.localDirection", events[i].localDirection);
+
+            archive->SetArchive(KeyedArchive::GenKeyFromIndex(outputIndex), eventArchive);
+            SafeRelease(eventArchive);
+            ++outputIndex;
+        }
+    }
+}
+
+void SoundComponent::Deserialize(KeyedArchive* archive, SerializationContext* serializationContext)
+{
+    events.clear();
+
+    if (archive)
+    {
+        uint32 eventsCount = archive->GetUInt32("sc.eventCount");
+        for (uint32 i = 0; i < eventsCount; ++i)
+        {
+            KeyedArchive* eventArchive = archive->GetArchive(KeyedArchive::GenKeyFromIndex(i));
+            if (eventArchive == nullptr)
+            {
+                Logger::Warning("[SoundComponent] Deserialize: event %u has no archive, skipped", i);
+                continue;
+            }
+
+            SoundEvent* sEvent = GetEngineContext()->soundSystem->DeserializeEvent(eventArchive);
+            if (sEvent == nullptr)
+            {
+                // Scene was saved by a newer engine (WWise-era key set: no FMOD "EventType" key,
+                // or unknown event). Skip the event instead of storing a null SoundEvent.
+                Logger::Warning("[SoundComponent] Deserialize: event %u ('%s') is not recognized by the FMOD sound system, skipped",
+                                i, eventArchive->GetFastName("eventName").c_str());
+                continue;
+            }
+
+            AddSoundEvent(sEvent, eventArchive->GetUInt32("sce.flags"), eventArchive->GetVector3("sce.localDirection", Vector3(1.f, 0.f, 0.f)));
+            SafeRelease(sEvent);
+        }
+    }
+
+    Component::Deserialize(archive, serializationContext);
 }
 }; // namespace DAVA

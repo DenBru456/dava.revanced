@@ -1,12 +1,13 @@
 #include "Scene3D/Components/WindComponent.h"
-#include "Scene3D/Components/TransformComponent.h"
+#include "FileSystem/KeyedArchive.h"
+#include "Logger/Logger.h"
+#include "Reflection/ReflectedMeta.h"
+#include "Reflection/ReflectionRegistrator.h"
 #include "Scene3D/Components/ComponentHelpers.h"
+#include "Scene3D/Components/TransformComponent.h"
 #include "Scene3D/Entity.h"
 #include "Scene3D/Scene.h"
-#include "FileSystem/KeyedArchive.h"
 #include "Scene3D/SceneFile/SerializationContext.h"
-#include "Reflection/ReflectionRegistrator.h"
-#include "Reflection/ReflectedMeta.h"
 
 namespace DAVA
 {
@@ -76,4 +77,4 @@ Vector3 WindComponent::GetDirection() const
 
     return Vector3(wtMx._00, wtMx._01, wtMx._02); //Get world direction only: wtMx * Vec3(1, 0, 0)
 }
-};
+}; // namespace DAVA
