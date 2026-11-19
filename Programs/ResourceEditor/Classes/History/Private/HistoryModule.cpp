@@ -39,7 +39,7 @@ void HistoryModule::PostInit()
             widget->OnSceneChanged(scene);
         } });
 
-    widget.reset(new HistoryWidget());
+    widget = new HistoryWidget();
 
     UI* ui = GetUI();
 
@@ -50,7 +50,15 @@ void HistoryModule::PostInit()
     info.ensureVisible = false;
 
     PanelKey key("History", info);
-    ui->AddView(DAVA::mainWindowKey, key, widget.get());
+    ui->AddView(DAVA::mainWindowKey, key, widget.data());
+}
+
+void HistoryModule::OnWindowClosed(const DAVA::WindowKey& /*key*/)
+{
+    if (widget != nullptr)
+    {
+        widget->DetachFromScene();
+    }
 }
 
 DAVA_VIRTUAL_REFLECTION_IMPL(HistoryModule)

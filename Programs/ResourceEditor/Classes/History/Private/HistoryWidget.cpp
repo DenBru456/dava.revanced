@@ -227,12 +227,7 @@ void HistoryWidget::OnSceneChanged(SceneEditor2* newScene)
         return;
     }
 
-    if (scene != nullptr)
-    {
-        RECommandStack* oldStack = scene->GetCommandStack();
-        oldStack->commandExecuted.Disconnect(this);
-        oldStack->historyReset.Disconnect(this);
-    }
+    DisconnectFromScene();
 
     scene = newScene;
     ResetSessionData();
@@ -245,6 +240,24 @@ void HistoryWidget::OnSceneChanged(SceneEditor2* newScene)
     }
 
     RebuildList();
+}
+
+void HistoryWidget::DetachFromScene()
+{
+    DisconnectFromScene();
+    scene = nullptr;
+}
+
+void HistoryWidget::DisconnectFromScene()
+{
+    if (scene == nullptr)
+    {
+        return;
+    }
+
+    RECommandStack* stack = scene->GetCommandStack();
+    stack->commandExecuted.Disconnect(this);
+    stack->historyReset.Disconnect(this);
 }
 
 void HistoryWidget::ResetSessionData()

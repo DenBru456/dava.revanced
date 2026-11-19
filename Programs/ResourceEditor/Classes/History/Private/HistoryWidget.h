@@ -45,6 +45,11 @@ public:
     explicit HistoryWidget(QWidget* parent = nullptr);
     ~HistoryWidget() override;
 
+    // Drops the connection to the command stack without touching the UI. Called
+    // from the module while the scene is still alive (main window closing), so
+    // the widget is never left listening to a stack that is being destroyed.
+    void DetachFromScene();
+
     // may be nullptr when no scene is open / scene was closed
     void OnSceneChanged(DAVA::SceneEditor2* scene);
 
@@ -54,6 +59,7 @@ private:
     // connected to RECommandStack::historyReset (Clear / RemoveCommands)
     void OnStackReset();
 
+    void DisconnectFromScene();
     void RebuildList();
     void JumpToIndex(int targetIndex);
     void OnItemClicked(QTreeWidgetItem* item, int column);
