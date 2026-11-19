@@ -1115,6 +1115,22 @@ void NMaterial::RebuildTextureBindings()
                 {
                     textureDescr.fragmentTexture[i] = tex->handle;
                     samplerDescr.fragmentSampler[i] = tex->samplerState;
+
+                    // The sampler above is a copy taken when the bindings were built, and it stays
+                    // cached until the next InvalidateTextureBindings(). A texture that was a
+                    // placeholder at that moment and got its real descriptor later still carries
+                    // the placeholder's CLAMP sampler here, which smears a repeating texture
+                    // The descriptor holds what the file actually asks for.
+                    if (tex->texDescriptor != nullptr && tex->IsPinkPlaceholder() == false)
+                    {
+                        const rhi::TextureAddrMode wantU = static_cast<rhi::TextureAddrMode>(tex->texDescriptor->drawSettings.wrapModeS);
+                        const rhi::TextureAddrMode wantV = static_cast<rhi::TextureAddrMode>(tex->texDescriptor->drawSettings.wrapModeT);
+                        if (samplerDescr.fragmentSampler[i].addrU != wantU || samplerDescr.fragmentSampler[i].addrV != wantV)
+                        {
+                            samplerDescr.fragmentSampler[i].addrU = wantU;
+                            samplerDescr.fragmentSampler[i].addrV = wantV;
+                        }
+                    }
                 }
                 else
                 {
