@@ -4,6 +4,7 @@
 #include "Render/GPUFamilyDescriptor.h"
 #include "Render/Highlevel/Vegetation/VegetationRenderObject.h"
 #include "Render/Image/ImageSystem.h"
+#include "Render/Image/ImageConvert.h"
 #include "Render/Material/NMaterial.h"
 #include "Render/Material/NMaterialNames.h"
 #include "Render/RenderHelper.h"
@@ -1292,27 +1293,60 @@ void VegetationRenderObject::GenerateDensityMapFromTransparencyMask(const FilePa
     }
     if (lightmapImage)
     {
-        uint32 ratio = lightmapImage->width / DENSITY_MAP_SIZE;
-
-        DVASSERT(lightmapImage->GetPixelFormat() == FORMAT_RGBA8888);
-        DVASSERT(ratio > 0);
-
-        if (ratio > 0 && lightmapImage->GetPixelFormat() == FORMAT_RGBA8888)
+        // Blitz ships the transparency mask as an export-form container: the
+        // runtime variant resolved above is commonly an RGBA4444 .pvr or a DX10
+        // BC .dds, so the pixel format here is not guaranteed to be RGBA8888.
+        // GetMeanAlpha reads the alpha bytes directly, so converting once is
+        // enough - asserting on the format aborted the whole texture reload.
+        if (lightmapImage->GetPixelFormat() != FORMAT_RGBA8888)
         {
-            densityMap.resize(DENSITY_MAP_SIZE * DENSITY_MAP_SIZE);
-            uint32 stride = sizeof(uint32);
-            for (uint32 y = 0; y < DENSITY_MAP_SIZE; ++y)
+            Image* convertedImage = Image::Create(lightmapImage->width, lightmapImage->height, FORMAT_RGBA8888);
+            bool converted = false;
+            if (convertedImage != nullptr)
             {
-                for (uint32 x = 0; x < DENSITY_MAP_SIZE; ++x)
+                converted = ImageConvert::ConvertImage(lightmapImage.get(), convertedImage);
+            }
+
+            if (converted == false)
+            {
+                if (convertedImage != nullptr)
                 {
-                    // VI: flip Y in order to match landscape and vegetation light mask
-                    uint32 flippedY = DENSITY_MAP_SIZE - y - 1;
-
-                    float32 meanAlpha = GetMeanAlpha(x, flippedY, ratio, stride, lightmapImage);
-
-                    uint32 bitIndex = x + y * DENSITY_MAP_SIZE;
-                    densityMap[bitIndex] = (meanAlpha > DENSITY_THRESHOLD) ? 1 : 0;
+                    convertedImage->Release();
                 }
+                Logger::Error("[VegetationRenderObject::GenerateDensityMapFromTransparencyMask] Cannot convert %s (format %d) to RGBA8888, density map skipped",
+                              imagePath.GetAbsolutePathname().c_str(),
+                              static_cast<int32>(lightmapImage->GetPixelFormat()));
+                return;
+            }
+
+            Logger::Info("[VegetationRenderObject::GenerateDensityMapFromTransparencyMask] Converted %s (format %d) to RGBA8888 for the density map",
+                         imagePath.GetAbsolutePathname().c_str(),
+                         static_cast<int32>(lightmapImage->GetPixelFormat()));
+            lightmapImage.reset(convertedImage);
+        }
+
+        uint32 ratio = lightmapImage->width / DENSITY_MAP_SIZE;
+        if (ratio == 0)
+        {
+            Logger::Error("[VegetationRenderObject::GenerateDensityMapFromTransparencyMask] Mask %s is smaller than the %u px density map, density map skipped",
+                          imagePath.GetAbsolutePathname().c_str(),
+                          static_cast<uint32>(DENSITY_MAP_SIZE));
+            return;
+        }
+
+        densityMap.resize(DENSITY_MAP_SIZE * DENSITY_MAP_SIZE);
+        uint32 stride = sizeof(uint32);
+        for (uint32 y = 0; y < DENSITY_MAP_SIZE; ++y)
+        {
+            for (uint32 x = 0; x < DENSITY_MAP_SIZE; ++x)
+            {
+                // VI: flip Y in order to match landscape and vegetation light mask
+                uint32 flippedY = DENSITY_MAP_SIZE - y - 1;
+
+                float32 meanAlpha = GetMeanAlpha(x, flippedY, ratio, stride, lightmapImage);
+
+                uint32 bitIndex = x + y * DENSITY_MAP_SIZE;
+                densityMap[bitIndex] = (meanAlpha > DENSITY_THRESHOLD) ? 1 : 0;
             }
         }
     }
