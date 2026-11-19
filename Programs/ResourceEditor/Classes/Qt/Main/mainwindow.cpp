@@ -95,6 +95,26 @@
 
 namespace MainWindowDetails
 {
+// MaterialEditor and TextureBrowser are singletons that live as top level windows.
+// QWidget::show() on a MINIMIZED window does not clear Qt::WindowMinimized, so after the
+// user minimizes one of them the toolbar button "shows" it and nothing comes back: it
+// stays a task bar entry. Clear the minimized bit first, then raise and activate so a
+// panel buried behind the scene window also comes to the front.
+void ShowPanelWindow(QWidget* panel)
+{
+    if (panel == nullptr)
+    {
+        return;
+    }
+    if (panel->isMinimized())
+    {
+        panel->setWindowState(panel->windowState() & ~Qt::WindowMinimized);
+    }
+    panel->show();
+    panel->raise();
+    panel->activateWindow();
+}
+
 bool IsSavingAllowed(const QString& warningTitle)
 {
     DAVA::SceneData* data = DAVA::Deprecated::GetActiveDataNode<DAVA::SceneData>();
@@ -629,7 +649,7 @@ void QtMainWindow::EnableSounds(bool toEnable)
 void QtMainWindow::OnMaterialEditor(DAVA::NMaterial* material)
 {
     MaterialEditor* editor = MaterialEditor::Instance();
-    editor->show();
+    MainWindowDetails::ShowPanelWindow(editor);
     if (material != nullptr)
     {
         editor->SelectMaterial(material);
@@ -638,7 +658,7 @@ void QtMainWindow::OnMaterialEditor(DAVA::NMaterial* material)
 
 void QtMainWindow::OnTextureBrowser()
 {
-    TextureBrowser::Instance()->show();
+    MainWindowDetails::ShowPanelWindow(TextureBrowser::Instance());
 
     DAVA::RefPtr<DAVA::SceneEditor2> sceneEditor = MainWindowDetails::GetCurrentScene();
     TextureBrowser::Instance()->sceneActivated(sceneEditor.Get());
