@@ -19,7 +19,7 @@ ILBMatrix4x4 ConvertDavaMatrixNoTranspose(const DAVA::Matrix4& davaMatrix);
 { \
 if (ILB_ST_SUCCESS != command) \
     { \
-        ILBStringHandle extendedError; \
+        ILBStringHandle extendedError = nullptr; \
         ILBGetExtendErrorInformation(&extendedError); \
         DAVA::Logger::Error("%s failed\n[%d] file:%s\nBeast error:\n%s", #command, __LINE__, __FILE__, ConvertBeastString(extendedError).c_str()); \
     } \

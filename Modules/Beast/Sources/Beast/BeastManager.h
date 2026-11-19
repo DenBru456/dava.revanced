@@ -78,25 +78,6 @@ public:
     void SetMode(eBeastMode mode);
     eBeastMode GetMode() const;
 
-    // Live sessions hand Beast a snapshot, so a transform changed in the editor has
-    // to be pushed again. SceneParser registers every instance it creates.
-    void RegisterLiveInstance(DAVA::Entity* entity, ILBInstanceHandle instance);
-
-    // Pushes the transforms that changed since the last tick, max once per frame.
-    void SyncLiveInstances();
-
-    // Clears the instance registry; the parser refills it during the scene walk.
-    void ResetLiveInstanceRegistry();
-
-    // true: ILB_BM_ENTIRE_LEVEL (bake every target), false: ILB_BM_CAMERA_FRUSTUM.
-    void SetLiveBakeEntireLevel(bool entireLevel);
-
-    // Targets that have received at least one lightmap image so far.
-    DAVA::int32 GetLiveTargetsWithImage() const;
-
-    // True while the camera target composes frames from the per-instance lightmaps.
-    bool IsLiveLightmapLighting() const;
-
     void SetLodLevel(int32 lodLevel);
     int32 GetLodLevel();
     void SetSwitchIndex(int32 switchIndex);
@@ -124,34 +105,10 @@ public:
     // releases Beast's own log file handles (its log lands next to the render output)
     void DisableLogTargets();
 
-    // ------------------------------------------------------------------
-    // Live session (eRnsT). MODE_LIVE ignores the pass/target model of a bake:
-    // every lightmapped instance gets a texture target, the renderer keeps
-    // lighting them, and it pushes refreshes as job updates.
-    // ------------------------------------------------------------------
-
-    // Per-instance target size for the live session. The lightmap size of the
-    // material is a bake value and is usually far too small to look at.
-    void SetLiveTargetSize(DAVA::int32 size);
-    void SetLiveShowWindow(bool show);
-    void SetLiveMaxTargets(DAVA::int32 count);
-    // 0 uploads the whole map; anything else is a preview radius in metres.
-    void SetLiveRadius(DAVA::float32 meters);
-    // Forwards to SceneParser: keeps the host window alive while the scene is parsed.
-    void SetLiveEventPump(DAVA::Function<void()> pump);
     // Skip decoding every albedo for Beast. Only useful for measuring start-up.
     void SetDumpTextures(bool value);
     // Longest side of the albedo handed to Beast; 0 keeps the shipped size.
     void SetTextureMaxSize(DAVA::int32 size);
-
-    // Render the camera view per pixel instead of through the lightmaps. Cheaper
-    // to see something immediately, since it does not wait for a bake.
-    void SetLiveViewPerPixel(bool perPixel);
-
-    // Render quality for the interactive renderer, 0..1. Beast derives its
-    // sampling settings from it: low is fast and noisy, high is clean and slow.
-    // Default 0.5; the live preview wants lower so the first frame arrives.
-    void SetLiveRenderQuality(DAVA::float32 quality);
 
     // When on, a batch is given a lightmap only if its material says so
     // (FLAG_ILLUMINATION_USED) and the per-material lightmapSize is used as is.
@@ -200,71 +157,13 @@ public:
     void SetUseMaterialIllumination(bool use);
     bool UseMaterialIllumination() const;
 
-    // Camera the session renders from. Beast wants object to world, the same
-    // convention the instances are uploaded with. Safe to call before the scene
-    // is finalised: the transform is stored and applied when the camera exists.
-    void SetLiveCamera(const DAVA::Matrix4& worldTransform, DAVA::float32 horizontalFovRadians, DAVA::float32 pixelAspect);
-
-    // Pump the session. Call once per frame; it does not block.
-    void UpdateLive();
-
-    // End the session and wait for the renderer to let go of the scene.
-    void StopLive();
-    void SetLivePaused(bool paused);
-    bool IsLivePaused() const;
-    bool IsLiveRunning() const;
-    bool HasLiveError() const;
-    const DAVA::String& GetLiveError() const;
-
-    // Latest camera view (ILB_UT_UPDATE_CAMERA_FRAME_BUFFER), RGBA8, row 0 = top.
-    // Returns false until the renderer has sent a frame.
-    bool GetLiveCameraImage(DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height) const;
-    // true exactly once per new camera frame
-    bool TakeLiveCameraImageChanged();
-
-    // Per-instance target images
-    DAVA::int32 GetLiveTargetCount() const;
-
-    // Camera frames Beast sent for a camera that is not the session camera (its own
-    // render window is 640x480). Counted so "no frames" can explain itself.
-    DAVA::int32 GetLiveDroppedFrameCount() const;
-    const DAVA::String& GetLiveTargetName(DAVA::int32 index) const;
-    bool GetLiveTargetImage(DAVA::int32 index, DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height) const;
-
 private:
     static bool shouldInit;
-
-    // live session internals
-    bool CreateLiveCamera();
-    bool GenerateLiveJob();
-    void ReadLiveUpdate(ILBJobUpdateHandle update);
-    DAVA::int32 CountLiveFramesWithImage() const;
 
     // Targets submitted across every LOD pass of the current bake. A later pass
     // that finds nothing new is the end of the chain, not a failure.
     DAVA::int32 bakedTargetsTotal = 0;
 
-    // Targets that have received at least one lightmap image so far.
-
-    void ReadLiveFramebuffer(ILBFramebufferHandle framebuffer, DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height);
-
-    struct LiveTargetImage
-    {
-        DAVA::String name;
-        ILBTargetEntityHandle targetEntity = nullptr;
-        DAVA::Vector<DAVA::uint8> rgba;
-        DAVA::int32 width = 0;
-        DAVA::int32 height = 0;
-    };
-
-    ILBCameraHandle liveCamera = nullptr;
-    ILBTargetHandle liveCameraTarget = nullptr;
-    bool liveViewPerPixel = false;
-    DAVA::float32 liveRenderQuality = 0.5f;
-    bool liveCameraSent = false;
-    DAVA::Vector3 liveCameraPushedPosition;
-    DAVA::int32 liveCameraJumpLogs = 0;
-    DAVA::int32 liveCameraPushes = 0;
     eLightmapSelection lightmapSelection = eLightmapSelection::All;
     // Fast by default: 32768 samples at variance 0.001 lets one bad texel per tile decide the
     // whole bake, which is what turned a map into a 45 minute job. Test/Fast/Balanced/Clean stay
@@ -286,50 +185,10 @@ private:
     DAVA::int32 bakeUVSetRefused = 0;
     DAVA::int32 bakeUVRectFitted = 0;
     DAVA::int32 bakeUVRectRefused = 0;
-    DAVA::int32 liveViewWidth = 960;
-    DAVA::int32 liveViewHeight = 540;
-    DAVA::Matrix4 liveCameraTransform;
-    DAVA::float32 liveCameraFov = 1.0f;
-    DAVA::float32 liveCameraAspect = 1.0f;
-    DAVA::int32 liveTargetSize = 256;
-    bool liveShowWindow = false; // Beast's own render window, a diagnostic for a silent session
-    DAVA::int32 liveMaxTargets = 32;
     DAVA::int64 parseStartTime = 0;
-    DAVA::float32 liveRadius = 300.0f;
     bool dumpTextures = true;
     DAVA::int32 textureMaxSize = 512; // targets are picked from the camera frustum, nearest first
-    DAVA::int32 liveUpdatesSinceReport = 0;
-    DAVA::int32 liveCameraFrameUpdates = 0; // ILB_UT_UPDATE_CAMERA_FRAME_BUFFER
-    DAVA::int32 liveTextureUpdates = 0; // ILB_UT_UPDATE_TEXTURE
-    DAVA::int32 liveReadFailuresLogged = 0;
-    DAVA::int32 liveMismatchedFrames = 0;
 
-    struct LiveTrackedInstance
-    {
-        DAVA::Entity* entity = nullptr;
-        ILBInstanceHandle instance = nullptr;
-        DAVA::Matrix4 lastTransform;
-    };
-    DAVA::Vector<LiveTrackedInstance> liveTrackedInstances;
-    DAVA::Function<void()> livePump;
-    DAVA::uint32 liveSyncCounter = 0;
-    bool liveBakeEntireLevel = true;
-    bool liveReadChannelsDecided = false;
-    ILBChannelSelection liveReadSelection = ILB_CS_RGBA;
-    DAVA::int32 liveReadChannelCount = 4;
-    DAVA::float64 liveLastReportTime = 0.0; // seconds, steady_clock
-    DAVA::int32 liveLastPumpStatus = 0; // ILBStatus of the last ILBGetJobUpdate
-    bool livePaused = false;
-    bool liveError = false;
-    DAVA::String liveErrorText;
-    DAVA::Vector<DAVA::uint8> liveCameraImage;
-    DAVA::int32 liveCameraImageWidth = 0;
-    DAVA::int32 liveCameraImageHeight = 0;
-    bool liveCameraImageChanged = false;
-    ILBTargetHandle liveTextureTarget = nullptr; // one shared target for the whole live session
-    DAVA::Vector<LiveTargetImage> liveTargets;
-    DAVA::Map<DAVA::String, DAVA::int32> liveTargetIndexByName;
-    DAVA::Set<DAVA::String> unmatchedLiveNames; // bounded: names Beast reported that we never created
     static void StaticInit();
 
     bool BeginScene();

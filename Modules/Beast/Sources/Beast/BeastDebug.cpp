@@ -4,6 +4,13 @@ namespace Beast
 {
 DAVA::String ConvertBeastString(ILBStringHandle h)
 {
+    if (h == nullptr)
+    {
+        // Beast leaves the handle untouched when a call fails without extended information, and
+        // the old BEAST_VERIFY passed an uninitialised handle here on every failure.
+        return DAVA::String();
+    }
+
     int32 len = 0;
     ILBGetLength(h, &len);
     if (len < 2)

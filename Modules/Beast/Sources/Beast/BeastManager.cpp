@@ -101,6 +101,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstring>
+#include <vector>
 
 #include <FileSystem/File.h>
 #include <FileSystem/FileSystem.h>
@@ -125,13 +126,91 @@ const DAVA::int64 RESULT_QUERY_TIMEOUT_MS = 10000;
 // not the end of the job.
 const DAVA::int32 NOT_RUNNING_GRACE_TICKS = 120;
 
-// Upper bound on job updates consumed per frame in a live session, so a fast
-// renderer cannot starve the editor's UI thread.
-const DAVA::int32 LIVE_UPDATES_PER_TICK = 96;
 }
 
 namespace Beast
 {
+// Beast resolves the job description it is handed into its own copy under the cache, and that copy
+// is the only record of the settings the bake actually ran with. A config that is ignored and a
+// config that is honoured write the same editor log lines and different lightmaps, so print the
+// global illumination block of the resolved file: Beast's own default for enableGI is false, and a
+// bake that silently lost its indirect light looks exactly like "the walls are flat and dark".
+static void ReportEffectiveJobSettings(const DAVA::FilePath& cacheDirectory)
+{
+    // Never walk the cache recursively. It keeps every job of every earlier bake, including the
+    // per-target exr results and Beast's GI subtrees, and the engine's EnumerateFilesInDirectory
+    // returns its whole vector by value at every recursion level, so the walk is quadratic in the
+    // number of files. Run on the UI thread right after ILBStartJob it stalls the editor for
+    // minutes - the log stops dead between "resolved job file" and the very next line of code,
+    // which is what looked like a frozen editor.
+    //
+    // The per-target job description sits at the top of each job folder, the answer is the same for
+    // every job in a session (one config), so a shallow probe answered once is enough.
+    static bool answered = false;
+    if (answered)
+    {
+        return;
+    }
+
+    DAVA::Vector<DAVA::FilePath> jobDirs =
+    DAVA::FileSystem::Instance()->EnumerateDirectoriesInDirectory(cacheDirectory + "jobs/", false);
+
+    static const char* candidates[] = { "target1_pass0.xml", "target0_pass0.xml", "target1_pass1.xml", "target2_pass1.xml" };
+
+    DAVA::int32 probed = 0;
+    for (const DAVA::FilePath& jobDir : jobDirs)
+    {
+        if (++probed > 64)
+        {
+            break;
+        }
+
+        for (const char* candidate : candidates)
+        {
+            const DAVA::FilePath xmlPath = jobDir + candidate;
+            if (!DAVA::FileSystem::Instance()->IsFile(xmlPath))
+            {
+                continue;
+            }
+
+            DAVA::File* file = DAVA::File::Create(xmlPath, DAVA::File::OPEN | DAVA::File::READ);
+            if (file == nullptr)
+            {
+                continue;
+            }
+
+            DAVA::Logger::Info("[BeastManager] resolved job file: %s", xmlPath.GetAbsolutePathname().c_str());
+
+            static const char* keys[] = {
+                "enableGI", "primaryIntegrator", "secondaryIntegrator", "fgRays", "fgInterpolationPoints",
+                "fgSmooth", "diffuseBoost", "prepassMaxSampleRate"
+            };
+
+            DAVA::char8 buf[512] = {};
+            DAVA::int32 printed = 0;
+            while ((printed < 10) && (file->ReadLine(buf, sizeof(buf)) > 0))
+            {
+                for (const char* key : keys)
+                {
+                    if (std::strstr(buf, key) != nullptr)
+                    {
+                        DAVA::Logger::Info("[BeastManager] effective: %s", buf);
+                        ++printed;
+                        break;
+                    }
+                }
+            }
+            file->Release();
+
+            answered = true;
+            return;
+        }
+    }
+
+    DAVA::Logger::Info("[BeastManager] no resolved job xml found in the shallow cache probe; effective settings unknown");
+    answered = true;
+}
+
 namespace BeastManagerDetails
 {
 // Beast binaries / config are deployed by the module CMake MIX_APP_DATA into
@@ -505,29 +584,99 @@ bool MultiplyAOIntoLightmap(const DAVA::FilePath& smPath, const DAVA::FilePath& 
     {
         unpainted[i] = IsTexelPainted(s + i * 4u) ? 0 : 1;
     }
+    // The two passes do not cover the same texels. Measured on a finished bake (lightmaps2, 11
+    // targets): sm is painted on 100% of every tile while ao is traced on 88-99% of it, so between
+    // 0.5% and 11.7% of every lit tile took no multiply at all and kept a factor of 1.0 while the
+    // texel next to it took 0.76-0.92. That boundary is a straight bright band lying across a flat
+    // wall, it has nothing to do with the geometry, and it moves when the tracing changes - which is
+    // the "sudden light" on an otherwise even surface. One support, one factor: the untraced texels
+    // inherit the value of their nearest traced neighbour. Breadth first from every traced texel at
+    // once, so the fill is distance ordered and does not blur the occlusion it copies.
+    DAVA::Vector<DAVA::uint8> aoFilled(ao->data, ao->data + static_cast<size_t>(texels) * 4u);
+    DAVA::Vector<DAVA::uint8> aoKnown(texels, 0);
+    DAVA::uint32 aoKnownCount = 0;
     for (DAVA::uint32 i = 0; i < texels; ++i)
     {
-        // The ao pass covers less area than the sm pass (measured: 0.61-0.91 of the tile against
-        // 0.68-0.98), so a zero there usually means "no occlusion was traced at this texel", not
-        // "fully shadowed". Multiplying those to zero painted black patches onto surfaces that had
-        // been lit, so a zero now leaves the lightmap alone.
+        if ((a[i * 4u] != 0) || (a[i * 4u + 1u] != 0) || (a[i * 4u + 2u] != 0))
+        {
+            aoKnown[i] = 1;
+            ++aoKnownCount;
+        }
+    }
+    const bool aoUsable = (aoKnownCount > 0);
+    if (aoUsable && (aoKnownCount < texels))
+    {
+        std::vector<DAVA::uint32> frontier;
+        frontier.reserve(texels);
+        for (DAVA::uint32 i = 0; i < texels; ++i)
+        {
+            if (aoKnown[i] != 0)
+            {
+                frontier.push_back(i);
+            }
+        }
+        static const DAVA::int32 neighbourOffsets[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+        for (size_t head = 0; head < frontier.size(); ++head)
+        {
+            const DAVA::uint32 index = frontier[head];
+            const DAVA::int32 cx = static_cast<DAVA::int32>(index % sm->width);
+            const DAVA::int32 cy = static_cast<DAVA::int32>(index / sm->width);
+            for (const auto& offset : neighbourOffsets)
+            {
+                const DAVA::int32 nx = cx + offset[0];
+                const DAVA::int32 ny = cy + offset[1];
+                if ((nx < 0) || (ny < 0) || (nx >= static_cast<DAVA::int32>(sm->width)) || (ny >= static_cast<DAVA::int32>(sm->height)))
+                {
+                    continue;
+                }
+                const DAVA::uint32 neighbour = static_cast<DAVA::uint32>(ny) * sm->width + static_cast<DAVA::uint32>(nx);
+                if (aoKnown[neighbour] != 0)
+                {
+                    continue;
+                }
+                aoKnown[neighbour] = 1;
+                for (DAVA::int32 ch = 0; ch < 4; ++ch)
+                {
+                    aoFilled[neighbour * 4u + static_cast<DAVA::uint32>(ch)] = aoFilled[index * 4u + static_cast<DAVA::uint32>(ch)];
+                }
+                frontier.push_back(neighbour);
+            }
+        }
+        DAVA::Logger::Info("[BeastManager] ao support grown from %u to %u texels (%.1f%% of the page had no occlusion traced)",
+                           aoKnownCount, texels, 100.0f * static_cast<DAVA::float32>(texels - aoKnownCount) / static_cast<DAVA::float32>(texels));
+    }
+
+    for (DAVA::uint32 i = 0; i < texels; ++i)
+    {
+        // A zero ao texel means "nothing was traced here", not "fully shadowed", so it must not
+        // multiply the lightmap to black. It must not be skipped either: skipping is what put the
+        // hard bright edge inside a wall. The value used here is the one the breadth first fill
+        // above carried into this texel from its nearest traced neighbour.
         for (DAVA::int32 ch = 0; ch < 3; ++ch)
         {
             const DAVA::uint32 idx = i * 4 + ch;
-            if (a[idx] != 0)
+            if (aoUsable)
             {
                 static const DAVA::float32 AO_FACTOR_FLOOR = 0.35f;
-                const DAVA::float32 factor = AO_FACTOR_FLOOR + (1.0f - AO_FACTOR_FLOOR) * aoCurve[a[idx]];
+                const DAVA::float32 factor = AO_FACTOR_FLOOR + (1.0f - AO_FACTOR_FLOOR) * aoCurve[aoFilled[idx]];
                 s[idx] = static_cast<DAVA::uint8>(DAVA::Min(255.0f, s[idx] * factor + 0.5f));
             }
 
-            // The ambient term an occluder cannot remove, as a limit on the FACTOR rather than on the
-            // result. Clamping the composited value to a constant 28/33/33 lifted the recesses but
-            // flattened them: every texel Beast had left below 31 became exactly 31, so 14.7% of the
-            // tile turned into flat plateaus meeting lit charts at 105 across a single texel. That hard
-            // edge is the thin dark line along wall edges. Flooring the factor instead keeps each
-            // texel's own gradient (a dim texel stays dimmer than a bright one) and still refuses to
-            // let occlusion consume all the light.
+            // The ambient term an occluder cannot remove. The factor floor above stops occlusion from
+            // eating everything, but it scales with the light, so a texel that was already dim still
+            // lands near 8 (measured p1 8.0) against the shipped map's 24.3. Both are needed: the
+            // factor keeps the gradient, this keeps the darkest texel off the floor of the histogram.
+            // 26/28/28 rather than the old 28/33/33, because that clamp lifted 14.7% of the tile onto
+            // one flat value; here the population below 26 is small enough that the step to a lit chart
+            // is not what the eye picks up.
+            if (unpainted[i] == 0)
+            {
+                static const DAVA::uint8 resultFloor[3] = { 26, 28, 28 };
+                if (s[idx] < resultFloor[ch])
+                {
+                    s[idx] = resultFloor[ch];
+                }
+            }
 
         }
     }
@@ -1112,7 +1261,6 @@ void BeastManager::Run(DAVA::Scene* sceneForBake)
     }
 
     // Before the walk, so the instances the parser registers survive.
-    ResetLiveInstanceRegistry();
 
     if (!BeginScene())
     {
@@ -1171,16 +1319,6 @@ void BeastManager::ParseScene(DAVA::Scene* sceneForBake)
 {
     DVASSERT(sceneParser != nullptr);
 
-    if ((mode == eBeastMode::MODE_LIVE) && (liveRadius > 0.0f))
-    {
-        DAVA::Matrix4 cameraToWorld;
-        const DAVA::Vector3 center = liveCameraTransform.GetInverse(cameraToWorld)
-        ? cameraToWorld.GetTranslationVector()
-        : DAVA::Vector3();
-        sceneParser->SetLiveCullCenter(center, liveRadius);
-        DAVA::Logger::Info("[BeastManager] live: uploading only entities within %.0f m of the camera", liveRadius);
-    }
-
     parseStartTime = DAVA::SystemTimer::GetMs();
     sceneParser->StartParsing();
     maxLodMaxSwitch = sceneParser->FindMaxLod(sceneForBake);
@@ -1228,14 +1366,6 @@ void BeastManager::OnSceneParsingCompleted()
         {
             DAVA::Logger::Warning("[BeastManager] no light source reached Beast (the scene lights are editor-only, disabled for static light or at the world origin): created a sky light so the bake is not black");
         }
-    }
-
-    if (mode == eBeastMode::MODE_LIVE && !CreateLiveCamera())
-    {
-        // the camera is part of the scene and the scene cannot be changed after
-        // EndScene, so a failed camera creation ends the session here
-        state = STATE_FAILED;
-        return;
     }
 
     const DAVA::int64 sceneEndStart = DAVA::SystemTimer::GetMs();
@@ -1292,6 +1422,11 @@ void BeastManager::EndScene()
         return;
     }
 
+    // Decide the single shadow caster while the scene is still mutable. Every light in a shipped
+    // scene arrives with editor.staticlight.enable = true and no castshadows key at all, so Beast's
+    // default would have all of them cast.
+    BeastLight::ApplySolitaryShadowPolicy();
+
     BEAST_VERIFY(ILBEndScene(scene));
 }
 
@@ -1301,13 +1436,6 @@ bool BeastManager::GenerateLightmaps()
     {
         DAVA::Logger::Error("[BeastManager] GenerateLightmaps: no Beast scene, the bake cannot continue");
         return false;
-    }
-
-    // A live session is not a bake: it has no config XML, no render passes and no
-    // output, and it must never reach the target/pass code below.
-    if (mode == eBeastMode::MODE_LIVE)
-    {
-        return GenerateLiveJob();
     }
 
     // pick the configuration file deployed with the module
@@ -1391,12 +1519,19 @@ bool BeastManager::GenerateLightmaps()
     // 100 m a 30 cm crevice subtends a sliver of the sampling sphere and the pass returns 238-245
     // there, i.e. nothing: the join between the tower and its plinth then reads as a hard step
     // (54 -> 92) with no darkening. The shipped map darkens by 31% at that join (58 falling to 40,
-    // then rising to 96 over 13 rows), which is contact occlusion at roughly half a metre, so the
-    // pass looks one metre out now instead of a hundred.
-    static const DAVA::float32 BEAST_AO_MAX_DISTANCE = 1.0f;
+    // then rising to 96 over 13 rows), which is contact occlusion at roughly half a metre.
+    //
+    // Measured on a finished bake at 1.0 m: the ao page spans 32..255 with a mean of 194 and 47.7%
+    // of a wall's tile sitting between 20 and 230. That is not contact occlusion, it is the ground:
+    // a 1 m hemisphere centred on a vertical wall contains the terrain, so every wall is multiplied
+    // by a roughly constant 0.5-0.8 no matter where it is. A uniform multiplier cannot add contrast,
+    // it only removes light, so walls came out flat and dark and the only structure left was the
+    // hard step where the sun term crossed zero. Contact scale is the crease, not the ground.
+    static const DAVA::float32 BEAST_AO_MAX_DISTANCE = 0.30f;
     static const DAVA::float32 BEAST_AO_CONE_ANGLE = 90.0f;
     BEAST_VERIFY(ILBCreateAmbientOcclusionPass(job, CONST_STRING_TO_BEAST_STRING("ao"), BEAST_AO_MAX_DISTANCE, BEAST_AO_CONE_ANGLE, &passSH));
-    DAVA::Logger::Info("[BeastManager] ao pass: maxDistance %.2f m, cone %.1f deg", BEAST_AO_MAX_DISTANCE, BEAST_AO_CONE_ANGLE);
+    DAVA::Logger::Info("[BeastManager] ao pass: maxDistance %.2f m, cone %.1f deg (contact scale: 1.0 m measured mean 194 and flattened walls)",
+                       BEAST_AO_MAX_DISTANCE, BEAST_AO_CONE_ANGLE);
 
     if (passLM == nullptr)
     {
@@ -1594,6 +1729,7 @@ bool BeastManager::GenerateLightmaps()
         return false;
     }
 
+
     // a job that is already not running right after a successful start aborted
     // immediately - say why instead of polling a dead handle for a minute
     ILBBool startedRunning = 0;
@@ -1617,12 +1753,6 @@ void BeastManager::Update()
 {
     if (state != STATE_GENERATING || job == nullptr)
     {
-        return;
-    }
-
-    if (mode == eBeastMode::MODE_LIVE)
-    {
-        UpdateLive();
         return;
     }
 
@@ -1813,14 +1943,6 @@ void BeastManager::RunLodIteration()
     ParseScene(davaScene);
 }
 
-void BeastManager::ResetLiveInstanceRegistry()
-{
-    // Called before the scene walk: clearing it afterwards (as the first version did)
-    // threw away every instance the parser had just registered, so nothing synced.
-    liveTrackedInstances.clear();
-    liveSyncCounter = 0;
-}
-
 void BeastManager::RetriveProgress()
 {
     ILBBool newActivity = 0;
@@ -1841,27 +1963,6 @@ void BeastManager::RetriveProgress()
         }
         curTaskProgress = progress;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Live session (eRnsT)
-//
-// Autodesk's own example (Thirdparty/examples/code/liveernst) is the contract:
-//   scene + camera -> ILBCreateLiveErnstJob -> targets added to the job ->
-//   ILBStartJob -> ILBSetErnstGIBakingMode(CAMERA_FRUSTUM) -> drain
-//   ILBGetJobUpdate until the caller is done.
-// There are no render passes, no output files, and the job never finishes on
-// its own unless the renderer dies.
-// ---------------------------------------------------------------------------
-
-void BeastManager::SetLiveTargetSize(DAVA::int32 size)
-{
-    liveTargetSize = DAVA::Max<DAVA::int32>(16, size);
-}
-
-void BeastManager::SetLiveShowWindow(bool show)
-{
-    liveShowWindow = show;
 }
 
 void BeastManager::SetUseMaterialIllumination(bool use)
@@ -2026,47 +2127,6 @@ bool BeastManager::UseStoredLightmapRects() const
     return lightmapSelection != eLightmapSelection::AutoOnly;
 }
 
-void BeastManager::SetLiveRenderQuality(DAVA::float32 quality)
-{
-    liveRenderQuality = DAVA::Max(0.0f, DAVA::Min(quality, 1.0f));
-}
-
-void BeastManager::SetLiveViewPerPixel(bool perPixel)
-{
-    if (liveViewPerPixel == perPixel)
-    {
-        return;
-    }
-    liveViewPerPixel = perPixel;
-
-    // Render mode is a camera-target property, so a running session can switch
-    // without a restart: lightmap lighting composes the frame from per-instance
-    // targets, and with no target data that is a checkerboard, not lighting.
-    if (mode == eBeastMode::MODE_LIVE && liveCameraTarget != nullptr)
-    {
-        const ILBCameraRenderModeType renderMode = perPixel ? ILB_LEC_CAMERA_PER_PIXEL_LIGHTING : ILB_LEC_CAMERA_LIGHT_MAP_LIGHTING;
-        const ILBStatus status = ILBCameraTargetSetRenderMode(liveCameraTarget, renderMode);
-        DAVA::Logger::Info("[BeastManager] live camera render mode -> %s (status %d)",
-                           perPixel ? "per-pixel" : "lightmap lighting", static_cast<DAVA::int32>(status));
-    }
-}
-
-void BeastManager::SetLiveEventPump(DAVA::Function<void()> pump)
-{
-    // Kept here as well: the target loop below runs on this thread and blocks the
-    // window just like the scene walk does.
-    livePump = pump;
-    if (sceneParser != nullptr)
-    {
-        sceneParser->SetEventPump(pump);
-    }
-}
-
-void BeastManager::SetLiveRadius(DAVA::float32 meters)
-{
-    liveRadius = DAVA::Max(0.0f, meters);
-}
-
 void BeastManager::SetDumpTextures(bool value)
 {
     dumpTextures = value;
@@ -2085,1011 +2145,9 @@ void BeastManager::SetTextureMaxSize(DAVA::int32 size)
     }
 }
 
-void BeastManager::SetLiveMaxTargets(DAVA::int32 count)
-{
-    liveMaxTargets = DAVA::Max(1, count);
-}
-
 namespace
 {
-// DAVA and Beast do not agree on what a "camera matrix" is.
-//
-// DAVA stores the VIEW matrix in Camera::GetMatrix(): Matrix4::BuildLookAtMatrix
-// fills it as a world-to-camera matrix (rows are the camera basis, translation
-// -R*p, Matrix4.h:293). Beast wants the opposite: the sample builds
-// translation(position) * cameraOrientation(forward, up), a camera-to-world
-// transform, and ConvertDavaMatrix flips rows to columns on the way in, which is
-// what a column-major reader needs for a logical matrix.
-//
-// Feeding the view matrix straight in therefore gave Beast an inverse rotation
-// plus a translation that is not a position at all: the camera sat at the origin
-// pointing the wrong way, which is why the panel showed a white surface with a
-// few edges. Invert first, then convert.
-ILBMatrix4x4 MakeBeastCameraMatrix(const DAVA::Matrix4& davaViewMatrix)
-{
-    DAVA::Matrix4 cameraToWorld;
-    if (!davaViewMatrix.GetInverse(cameraToWorld))
-    {
-        DAVA::Logger::Warning("[BeastManager] live camera: the view matrix is singular, pushing it unconverted");
-        return ConvertDavaMatrix(davaViewMatrix);
-    }
-    return ConvertDavaMatrix(cameraToWorld);
-}
 } // namespace
-void BeastManager::SetLiveCamera(const DAVA::Matrix4& worldTransform, DAVA::float32 horizontalFovRadians, DAVA::float32 pixelAspect)
-{
-    // Beast takes radians and rejects anything outside (0, pi). DAVA hands out
-    // degrees, so the caller converts; the clamp here keeps a bad value from
-    // killing the session instead of the single call.
-    const DAVA::float32 fov = DAVA::Max(0.01f, DAVA::Min(horizontalFovRadians, 3.14159f));
-    const DAVA::float32 aspect = (pixelAspect > 0.0f) ? pixelAspect : 1.0f;
-
-    // A live renderer refines progressively per camera position, so a push from
-    // an unchanged view is noise at best: the panel calls this every tick and the
-    // editor camera usually has not moved. Only a real change is forwarded.
-    bool changed = !liveCameraSent;
-    if (!changed)
-    {
-        for (DAVA::int32 row = 0; row < 4 && !changed; ++row)
-        {
-            for (DAVA::int32 column = 0; column < 4; ++column)
-            {
-                if (DAVA::Abs(worldTransform._data[row][column] - liveCameraTransform._data[row][column]) > 1.0e-5f)
-                {
-                    changed = true;
-                    break;
-                }
-            }
-        }
-        changed = changed || DAVA::Abs(fov - liveCameraFov) > 1.0e-5f || DAVA::Abs(aspect - liveCameraAspect) > 1.0e-5f;
-    }
-
-    liveCameraTransform = worldTransform;
-    liveCameraFov = fov;
-    liveCameraAspect = aspect;
-
-    if (!changed || liveCamera == nullptr)
-    {
-        return;
-    }
-
-    // A jump of hundreds of units between two ticks is not a pan, it is another
-    // view or another camera taking over, and it is worth a line in the log: the
-    // panel then jumps with it and the user sees the view teleported.
-    // The position lives in the inverse: GetTranslationVector() of a view matrix
-    // is -R*p, not where the camera is.
-    DAVA::Matrix4 pushedCameraToWorld;
-    const DAVA::Vector3 pushedPosition = liveCameraTransform.GetInverse(pushedCameraToWorld)
-    ? pushedCameraToWorld.GetTranslationVector()
-    : DAVA::Vector3();
-    if (liveCameraSent)
-    {
-        const DAVA::float32 moveDistance = (pushedPosition - liveCameraPushedPosition).Length();
-        if (moveDistance > 100.0f && liveCameraJumpLogs < 8)
-        {
-            ++liveCameraJumpLogs;
-            DAVA::Logger::Info("[BeastManager] live camera jumped %.1f units in one tick, from (%.1f, %.1f, %.1f) to (%.1f, %.1f, %.1f) - another view or camera took over",
-                               moveDistance, liveCameraPushedPosition.x, liveCameraPushedPosition.y, liveCameraPushedPosition.z,
-                               pushedPosition.x, pushedPosition.y, pushedPosition.z);
-        }
-    }
-
-    ILBMatrix4x4 matrix = MakeBeastCameraMatrix(liveCameraTransform);
-    const ILBStatus transformStatus = ILBSetCameraTransform(liveCamera, &matrix);
-    const ILBStatus fovStatus = ILBSetFov(liveCamera, liveCameraFov, liveCameraAspect);
-    if (!liveCameraSent)
-    {
-        // one line to prove the camera sits where the editor camera sits: if these
-        // numbers look nothing like the editor's position, the matrix is still wrong
-        DAVA::Logger::Info("[BeastManager] live camera: first push from (%.1f, %.1f, %.1f), fov %.1f deg, status %d",
-                           pushedPosition.x, pushedPosition.y, pushedPosition.z,
-                           liveCameraFov * 57.2957795f, static_cast<DAVA::int32>(transformStatus));
-    }
-    liveCameraSent = (transformStatus == ILB_ST_SUCCESS);
-    liveCameraPushedPosition = pushedPosition;
-    ++liveCameraPushes;
-    if (!liveCameraSent)
-    {
-        BeastManagerDetails::LogILBFailure("ILBSetCameraTransform (live)", transformStatus);
-    }
-    if (fovStatus != ILB_ST_SUCCESS)
-    {
-        BeastManagerDetails::LogILBFailure("ILBSetFov (live)", fovStatus);
-    }
-}
-
-bool BeastManager::CreateLiveCamera()
-{
-    if (liveCamera != nullptr)
-    {
-        return true;
-    }
-
-    if (scene == nullptr)
-    {
-        liveError = true;
-        liveErrorText = "no ILB scene for the live camera";
-        return false;
-    }
-
-    ILBMatrix4x4 matrix = MakeBeastCameraMatrix(liveCameraTransform);
-    const ILBStatus status = ILBCreatePerspectiveCamera(scene, CONST_STRING_TO_BEAST_STRING("beast_live_camera"), &matrix, &liveCamera);
-    if (status != ILB_ST_SUCCESS || liveCamera == nullptr)
-    {
-        BeastManagerDetails::LogILBFailure("ILBCreatePerspectiveCamera", status);
-        liveError = true;
-        liveErrorText = "ILBCreatePerspectiveCamera failed";
-        return false;
-    }
-
-    BEAST_VERIFY(ILBSetFov(liveCamera, liveCameraFov, liveCameraAspect));
-    return true;
-}
-
-bool BeastManager::GenerateLiveJob()
-{
-    DVASSERT(scene != nullptr);
-
-    // A live renderer writes the reason it does nothing into its own log, and by
-    // default that log goes nowhere. Route it beside the exe like the bake path.
-    if (!logTargetsActive)
-    {
-        logTargetsActive = true;
-        const DAVA::String workingDir = DAVA::FileSystem::Instance()->GetCurrentWorkingDirectory().GetAbsolutePathname();
-        beastErrorLogPath = workingDir + "beast_live_error.log";
-        beastInfoLogPath = workingDir + "beast_live_info.log";
-        ILBSetLogTarget(ILB_LT_ERROR, ILB_LS_FILE, STRING_TO_BEAST_STRING(beastErrorLogPath));
-        ILBSetLogTarget(ILB_LT_INFO, ILB_LS_FILE, STRING_TO_BEAST_STRING(beastInfoLogPath));
-        DAVA::Logger::Info("[BeastManager] Beast live log routed to '%s' and '%s'", beastErrorLogPath.c_str(), beastInfoLogPath.c_str());
-    }
-
-    const ILBStatus status = ILBCreateLiveErnstJob(handle, GENERATE_BEAST_NAME(BeastManager), scene, &job);
-    if (status != ILB_ST_SUCCESS || job == nullptr)
-    {
-        BeastManagerDetails::LogILBFailure("ILBCreateLiveErnstJob", status);
-        liveError = true;
-        liveErrorText = "ILBCreateLiveErnstJob failed";
-        return false;
-    }
-
-    // Autodesk's own live sample (Thirdparty/examples/code/liveernst) uses ONE
-    // texture target for the whole session and adds every instance to it through
-    // ILBAddBakeInstance, giving each target entity its own resolution with
-    // ILBSetBakeResolution. One target per instance would mean thousands of render
-    // targets and no benefit.
-    liveTargets.clear();
-    liveTargetIndexByName.clear();
-
-    if (liveTextureTarget == nullptr)
-    {
-        const DAVA::String targetName = DAVA::Format("%s_liveTextureTarget", GetBeastName().c_str());
-        const ILBStatus targetStatus = ILBCreateTextureTarget(job, STRING_TO_BEAST_STRING(targetName), liveTargetSize, liveTargetSize, &liveTextureTarget);
-        if (targetStatus != ILB_ST_SUCCESS || liveTextureTarget == nullptr)
-        {
-            BeastManagerDetails::LogILBFailure("ILBCreateTextureTarget (live)", targetStatus);
-            liveError = true;
-            liveErrorText = "ILBCreateTextureTarget failed for the live session";
-            return false;
-        }
-    }
-
-    // The camera target is the view itself. Beast renders the session camera into
-    // it and streams ILB_UT_UPDATE_CAMERA_FRAME_BUFFER, and frustum baking mode
-    // derives its work from a camera target: with a texture target alone the
-    // renderer has no view, reports activity 0 / progress 0 and shows a black
-    // window.
-    if (liveCamera != nullptr && liveCameraTarget == nullptr)
-    {
-        const DAVA::String cameraTargetName = DAVA::Format("%s_liveCameraTarget", GetBeastName().c_str());
-        const ILBStatus cameraTargetStatus = ILBCreateCameraTarget(job, STRING_TO_BEAST_STRING(cameraTargetName), liveCamera,
-                                                                   liveViewWidth, liveViewHeight, &liveCameraTarget);
-        if (cameraTargetStatus != ILB_ST_SUCCESS || liveCameraTarget == nullptr)
-        {
-            BeastManagerDetails::LogILBFailure("ILBCreateCameraTarget (live)", cameraTargetStatus);
-            liveCameraTarget = nullptr;
-        }
-        else
-        {
-            const ILBCameraRenderModeType renderMode = liveViewPerPixel ? ILB_LEC_CAMERA_PER_PIXEL_LIGHTING : ILB_LEC_CAMERA_LIGHT_MAP_LIGHTING;
-            const ILBStatus modeStatus = ILBCameraTargetSetRenderMode(liveCameraTarget, renderMode);
-            DAVA::Logger::Info("[BeastManager] live camera target: %dx%d, %s lighting (render mode status %d)",
-                               liveViewWidth, liveViewHeight, liveViewPerPixel ? "per-pixel" : "lightmap",
-                               static_cast<DAVA::int32>(modeStatus));
-        }
-    }
-
-    // Only what the camera can see becomes a target. Beast keeps a framebuffer per
-    // target entity, and a live frame for 1235 instances at 512 px is a full bake:
-    // it produced no update at all in the first minutes. Nearest first, capped.
-    const DAVA::List<BeastMeshInstance*>& instances = BeastMeshInstance::GetResourceList();
-
-    // A BaseObject starts at referenceCount 1 and its destructor asserts the count
-    // is 0, so it can never live on the stack: that assert is what fired here.
-    DAVA::Frustum* frustum = new DAVA::Frustum();
-    bool haveFrustum = false;
-    DAVA::Camera* camera = davaScene != nullptr ? davaScene->GetCurrentCamera() : nullptr;
-    if (camera != nullptr)
-    {
-        frustum->Build(camera->GetViewProjMatrix(), rhi::DeviceCaps().isZeroBaseClipRange);
-        haveFrustum = true;
-    }
-
-    struct LiveCandidate
-    {
-        BeastMeshInstance* instance = nullptr;
-        DAVA::float32 distanceSq = 0.0f;
-    };
-
-    DAVA::Vector<LiveCandidate> candidates;
-    DAVA::int32 culledByFrustum = 0;
-    DAVA::int32 withoutMesh = 0;
-    DAVA::int32 withoutBox = 0;
-    const DAVA::Vector3 cameraPosition = haveFrustum ? camera->GetPosition() : DAVA::Vector3();
-    const bool composeFromTargets = !liveViewPerPixel;
-
-    for (BeastMeshInstance* instance : instances)
-    {
-        if (instance->GetILBMeshInstance() == nullptr)
-        {
-            ++withoutMesh; // the mesh failed to upload, nothing to light
-            continue;
-        }
-
-        LiveCandidate candidate;
-        candidate.instance = instance;
-
-        DAVA::RenderBatch* batch = instance->GetRenderBatch();
-        DAVA::AABBox3 worldBox;
-        bool haveBox = false;
-        if (batch != nullptr && !batch->GetBoundingBox().IsEmpty())
-        {
-            DAVA::RenderObject* renderObject = batch->GetRenderObject();
-            DAVA::Matrix4* worldTransform = renderObject != nullptr ? renderObject->GetWorldMatrixPtr() : nullptr;
-            if (worldTransform != nullptr)
-            {
-                batch->GetBoundingBox().GetTransformedBox(*worldTransform, worldBox);
-            }
-            else
-            {
-                worldBox = batch->GetBoundingBox();
-            }
-            haveBox = true;
-        }
-
-        // Lightmap lighting builds the frame out of the per-instance targets, so an
-        // instance without a target is either black or a crash inside Ernst. In that
-        // mode nothing is culled here: every instance inside the radius gets a target.
-        if (!composeFromTargets && haveFrustum && haveBox && !instance->IsLandscape() && !frustum->IsInside(worldBox))
-        {
-            ++culledByFrustum;
-            continue;
-        }
-
-        if (instance->IsLandscape())
-        {
-            // the ground is a single mesh and everything else stands on it, so it
-            // must never lose the target cap to a nearby prop. Negative sorts it
-            // ahead of every real distance.
-            candidate.distanceSq = -1.0f;
-        }
-        else if (haveBox)
-        {
-            candidate.distanceSq = (worldBox.GetCenter() - cameraPosition).SquareLength();
-        }
-        else
-        {
-            // no bounding box to sort by: keep it, but never ahead of geometry we
-            // can actually place in front of the camera
-            candidate.distanceSq = std::numeric_limits<DAVA::float32>::max();
-            ++withoutBox;
-        }
-
-        candidates.push_back(candidate);
-    }
-
-    DAVA::SafeRelease(frustum);
-
-    // nearest first, so the cap keeps what is actually in front of the camera
-    std::sort(candidates.begin(), candidates.end(), [](const LiveCandidate& a, const LiveCandidate& b)
-              {
-                  return a.distanceSq < b.distanceSq;
-              });
-
-    // The budget applies in both modes. It was off in lightmap lighting for exactly one
-    // build and Ernst died during "loading initial scene" with 972 targets at 512 px
-    // (1 GB of RGBA before a single frame): the cap is a memory bound, not a nicety.
-    DAVA::int32 cappedByCount = 0;
-    if (static_cast<DAVA::int32>(candidates.size()) > liveMaxTargets)
-    {
-        cappedByCount = static_cast<DAVA::int32>(candidates.size()) - liveMaxTargets;
-        candidates.resize(static_cast<std::size_t>(liveMaxTargets));
-    }
-    if (composeFromTargets)
-    {
-        DAVA::Logger::Info("[BeastManager] lightmap lighting: %d target(s) for %d instance(s) in the radius (nearest first; the rest stay unbound)",
-                           static_cast<DAVA::int32>(candidates.size()), static_cast<DAVA::int32>(candidates.size()) + cappedByCount);
-    }
-
-    DAVA::Logger::Info("[BeastManager] live target selection: %d chosen (frustum culled %d, %d over the %d cap, %d without mesh, %d without bounds)",
-                       static_cast<DAVA::int32>(candidates.size()), culledByFrustum, cappedByCount, liveMaxTargets, withoutMesh, withoutBox);
-
-    const DAVA::int32 candidateCount = static_cast<DAVA::int32>(candidates.size());
-
-    const DAVA::int32 LIVE_TEXEL_BUDGET = 384 * 1024 * 1024; // 384 MP ~ 1.5 GB of RGBA in Beast
-    DAVA::int32 perInstanceSize = liveTargetSize;
-    if (candidateCount > 0)
-    {
-        const DAVA::float32 affordable = sqrtf(static_cast<DAVA::float32>(LIVE_TEXEL_BUDGET) / static_cast<DAVA::float32>(candidateCount));
-        if (affordable < static_cast<DAVA::float32>(perInstanceSize))
-        {
-            // round down to a power of two so the mip chain stays clean
-            DAVA::int32 clamped = 64;
-            while (clamped * 2 <= static_cast<DAVA::int32>(affordable) && clamped < liveTargetSize)
-            {
-                clamped *= 2;
-            }
-            perInstanceSize = clamped;
-        }
-    }
-
-
-
-
-    // ADD THE INSTANCES BEFORE THE JOB STARTS.
-    // Ernst warns "Warning target <name> is empty." and then dies with an access
-    // violation while it loads the scene when a texture target has no instance
-    // yet, which is exactly what the post-start add produced. Adding instances is
-    // legal before the start (only the per-target property sets were refused), so
-    // the target is populated for the start and the resolutions are applied after
-    // it.
-    DAVA::int32 skippedWithoutMesh = withoutMesh;
-    DAVA::int32 skippedWithoutTarget = 0;
-    for (const LiveCandidate& candidate : candidates)
-    {
-        BeastMeshInstance* instance = candidate.instance;
-        ILBTargetEntityHandle targetEntity = nullptr;
-        const ILBStatus addStatus = ILBAddBakeInstance(liveTextureTarget, instance->GetILBMeshInstance(), &targetEntity);
-        if (addStatus != ILB_ST_SUCCESS || targetEntity == nullptr)
-        {
-            if (skippedWithoutTarget < 5)
-            {
-                DAVA::Logger::Warning("[BeastManager] live session: ILBAddBakeInstance failed for '%s'", instance->GetName().c_str());
-                BeastManagerDetails::LogILBFailure("ILBAddBakeInstance (live)", addStatus);
-            }
-            ++skippedWithoutTarget;
-            continue;
-        }
-
-        LiveTargetImage entry;
-        // exactly the string handed to ILBCreateInstance: it is what
-        // ILBGetTargetEntityInstance reports back in an update
-        entry.name = instance->GetName();
-        // allocated on the first frame Beast pushes for this instance
-        entry.width = 0;
-        entry.height = 0;
-        entry.targetEntity = targetEntity;
-        liveTargetIndexByName[entry.name] = static_cast<DAVA::int32>(liveTargets.size());
-        liveTargets.push_back(entry);
-
-        if (livePump && (liveTargets.size() % 16) == 0)
-        {
-            livePump();
-        }
-    }
-
-    if (liveTargets.empty())
-    {
-        liveError = true;
-        liveErrorText = "the live session has no geometry to light";
-        DAVA::Logger::Error("[BeastManager] live session: no target, every instance was skipped (see the [BeastMesh] lines above)");
-        return false;
-    }
-
-    DAVA::Logger::Info("[BeastManager] live session: adding %d target(s) at %dx%d before the job starts (%d skipped, no mesh; %d skipped, add failed)",
-                       static_cast<DAVA::int32>(liveTargets.size()), perInstanceSize, perInstanceSize, skippedWithoutMesh, skippedWithoutTarget);
-
-    // No display window: the editor shows the frames, and a stray Beast window
-    // would only compete for the foreground.
-    // FORCE_LOCAL, never AUTODETECT: a distributed render cannot stream frames
-    // back to the editor, and on this machine AUTODETECT tried to reach a
-    // Distribeast node and failed the whole job with
-    // "Could not connect to Distribeast node".
-    // A live Ernst session never opens Beast's own window. It is a separate renderer
-    // that hands the editor a framebuffer; opening its window as well would mean a
-    // second viewport nobody asked for. The old "Beast window" switch is gone.
-    const ILBShowResults showResults = ILB_SR_NO_DISPLAY;
-    if (liveShowWindow)
-    {
-        DAVA::Logger::Info("[BeastManager] live: the Beast window switch is ignored, a live session runs headless and streams frames to the editor");
-    }
-    const ILBStatus startStatus = ILBStartJob(job, showResults, ILB_RD_FORCE_LOCAL);
-    if (startStatus != ILB_ST_SUCCESS)
-    {
-        BeastManagerDetails::LogILBFailure("ILBStartJob (live)", startStatus);
-        liveError = true;
-        liveErrorText = "ILBStartJob failed for the live session";
-        return false;
-    }
-
-    // Now that the job runs, give each target entity its resolution. Before the
-    // start the job refuses this with "Unable to set property
-    // LightMapping.Resolution", which left every target on the create resolution.
-    DAVA::int32 resolutionFailures = 0;
-    for (LiveTargetImage& entry : liveTargets)
-    {
-        const ILBStatus resolutionStatus = ILBSetBakeResolution(entry.targetEntity, perInstanceSize, perInstanceSize);
-        if (resolutionStatus != ILB_ST_SUCCESS)
-        {
-            ++resolutionFailures;
-            if (resolutionFailures <= 5)
-            {
-                BeastManagerDetails::LogILBFailure("ILBSetBakeResolution (live)", resolutionStatus);
-            }
-        }
-    }
-    DAVA::Logger::Info("[BeastManager] live session: %d target(s) at %dx%d (%d requested; %d resolution failure(s))",
-                       static_cast<DAVA::int32>(liveTargets.size()), perInstanceSize, perInstanceSize, liveTargetSize, resolutionFailures);
-
-    // render what the camera sees instead of the entire level: this is what
-    // makes the session responsive
-    // ILBSetJobRenderQuality belongs to bake jobs: on a live Ernst job it answers
-    // status 6 (ILB_ST_INVALID_HANDLE) and leaves the defaults in place, which is
-    // why the first frame took 80 s. The Ernst knob is the pixel variance
-    // threshold: a pixel is done once its variance drops below it, so a higher
-    // threshold converges (and shows up) sooner.
-    const DAVA::float32 cleanliness = 1.0f - DAVA::Max(0.0f, DAVA::Min(liveRenderQuality, 1.0f));
-    const DAVA::float32 varianceThreshold = 0.0025f + 0.25f * cleanliness * cleanliness;
-    const ILBStatus varianceStatus = ILBSetErnstVarianceThreshold(job, varianceThreshold);
-    DAVA::Logger::Info("[BeastManager] live variance threshold %.4f from quality %.2f (status %d)",
-                       varianceThreshold, liveRenderQuality, static_cast<DAVA::int32>(varianceStatus));
-
-    // CAMERA_FRUSTUM only bakes what the camera sees, which is why 143 of 144 targets
-    // never received an image and every lightmapped object stayed black.
-    // ILB_BM_ENTIRE_LEVEL bakes all targets, prioritised by variance.
-    const ILBErnstBakingModeType bakingMode = liveBakeEntireLevel ? ILB_BM_ENTIRE_LEVEL : ILB_BM_CAMERA_FRUSTUM;
-    BEAST_VERIFY(ILBSetErnstGIBakingMode(job, bakingMode));
-    DAVA::Logger::Info("[BeastManager] live GI baking mode: %s", liveBakeEntireLevel ? "entire level" : "camera frustum");
-    BEAST_VERIFY(ILBSetErnstRunningState(job, ILB_ERS_RUN));
-
-    // Kick the worker: pushing the camera again is what tells a live session the
-    // view changed, and it costs one call.
-    if (liveCamera != nullptr)
-    {
-        const ILBMatrix4x4 kickMatrix = MakeBeastCameraMatrix(liveCameraTransform);
-        ILBSetCameraTransform(liveCamera, &kickMatrix);
-        ILBSetFov(liveCamera, liveCameraFov, liveCameraAspect);
-    }
-
-    livePaused = false;
-    liveUpdatesSinceReport = 0;
-    liveCameraFrameUpdates = 0;
-    liveTextureUpdates = 0;
-    liveCameraPushes = 0;
-    liveCameraSent = false;
-    liveCameraJumpLogs = 0;
-    liveReadFailuresLogged = 0;
-    liveMismatchedFrames = 0;
-    liveReadChannelsDecided = false;
-    liveReadSelection = ILB_CS_RGBA;
-    liveReadChannelCount = 4;
-    liveLastReportTime = 0.0;
-    state = STATE_GENERATING;
-    return true;
-}
-
-DAVA::int32 BeastManager::GetLiveTargetsWithImage() const
-{
-    return CountLiveFramesWithImage();
-}
-
-bool BeastManager::IsLiveLightmapLighting() const
-{
-    return (mode == eBeastMode::MODE_LIVE) && !liveViewPerPixel;
-}
-
-DAVA::int32 BeastManager::CountLiveFramesWithImage() const
-{
-    DAVA::int32 count = 0;
-    for (const LiveTargetImage& entry : liveTargets)
-    {
-        if (entry.width > 0 && entry.height > 0)
-        {
-            ++count;
-        }
-    }
-    return count;
-}
-
-
-namespace
-{
-// A fatal error inside Ernst writes a dump next to the job it was running. We do
-// not hunt for the newest one, we just point at the folder: temp_beast/cache/jobs.
-void LogMinidumpLocation()
-{
-    const DAVA::FilePath jobsRoot = Beast::SceneParser::GetTemporaryFolder() + "cache/jobs/";
-    DAVA::Logger::Error("[BeastManager] if the renderer died, it wrote a minidump under '%s' - attach the newest *.dmp", jobsRoot.GetAbsolutePathname().c_str());
-}
-} // namespace
-
-void BeastManager::ReadLiveFramebuffer(ILBFramebufferHandle framebuffer, DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height)
-{
-    DAVA::int32 w = 0;
-    DAVA::int32 h = 0;
-    const ILBStatus resolutionStatus = ILBGetResolution(framebuffer, &w, &h);
-    if (resolutionStatus != ILB_ST_SUCCESS || w <= 0 || h <= 0)
-    {
-        if (liveReadFailuresLogged < 3)
-        {
-            ++liveReadFailuresLogged;
-            DAVA::Logger::Warning("[BeastManager] live framebuffer: ILBGetResolution status %d, %dx%d",
-                                  static_cast<DAVA::int32>(resolutionStatus), w, h);
-        }
-        return;
-    }
-
-    // Not every Beast framebuffer has an alpha channel, and asking for one that
-    // is not there fails with ILB_ST_INVALID_PARAMETER and writes
-    // "Channel A not found" into Beast's error log for every single attempt
-    // (5739 lines in one session). The channel count says it up front: four
-    // channels means RGBA, three means RGB. The first attempt also teaches the
-    // session, so a buffer with four channels that are not RGBA falls back once.
-    if (!liveReadChannelsDecided)
-    {
-        DAVA::int32 channelCount = 0;
-        if (ILBGetChannelCount(framebuffer, &channelCount) == ILB_ST_SUCCESS && channelCount > 0)
-        {
-            if (channelCount < 4)
-            {
-                liveReadSelection = ILB_CS_RGB;
-                liveReadChannelCount = 3;
-            }
-            liveReadChannelsDecided = true;
-            DAVA::Logger::Info("[BeastManager] live framebuffer: %d channel(s), reading %s",
-                               channelCount, liveReadChannelCount == 4 ? "RGBA" : "RGB");
-        }
-    }
-
-    for (DAVA::int32 attempt = 0; attempt < 2; ++attempt)
-    {
-        const size_t bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * static_cast<size_t>(liveReadChannelCount);
-        rgba.resize(bytes);
-
-        // gamma 2.2: Beast works in linear space and the panel is sRGB
-        // Region is inclusive lower, exclusive upper, so 0,0,w,h is the whole buffer
-        const ILBStatus readStatus = ILBReadRegionLDR(framebuffer, 0, 0, w, h, liveReadSelection, 2.2f, rgba.data());
-        if (readStatus == ILB_ST_SUCCESS)
-        {
-            break;
-        }
-
-        if (attempt == 0 && liveReadSelection == ILB_CS_RGBA)
-        {
-            // four channels but no alpha in them: read RGB from now on
-            liveReadSelection = ILB_CS_RGB;
-            liveReadChannelCount = 3;
-            liveReadChannelsDecided = true;
-            DAVA::Logger::Info("[BeastManager] live framebuffer: RGBA read failed (status %d) at %dx%d, switching to RGB",
-                               static_cast<DAVA::int32>(readStatus), w, h);
-            continue;
-        }
-
-        if (liveReadFailuresLogged < 3)
-        {
-            ++liveReadFailuresLogged;
-            DAVA::Logger::Warning("[BeastManager] live framebuffer: ILBReadRegionLDR status %d at %dx%d",
-                                  static_cast<DAVA::int32>(readStatus), w, h);
-        }
-        return;
-    }
-
-    // One layout for the panel: expand RGB to RGBA in place, last pixel first so
-    // the destination never overtakes the source.
-    if (liveReadChannelCount == 3)
-    {
-        const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
-        rgba.resize(pixelCount * 4u);
-        for (size_t i = pixelCount; i-- > 0;)
-        {
-            const size_t src = i * 3u;
-            const size_t dst = i * 4u;
-            rgba[dst + 0] = rgba[src + 0];
-            rgba[dst + 1] = rgba[src + 1];
-            rgba[dst + 2] = rgba[src + 2];
-            rgba[dst + 3] = 255;
-        }
-    }
-
-    width = w;
-    height = h;
-}
-
-void BeastManager::ReadLiveUpdate(ILBJobUpdateHandle update)
-{
-    ILBUpdateType type = ILB_UT_UPDATE_TEXTURE;
-    if (ILBGetJobUpdateType(update, &type) != ILB_ST_SUCCESS)
-    {
-        return;
-    }
-
-    if (type == ILB_UT_UPDATE_CAMERA_FRAME_BUFFER)
-    {
-        ++liveCameraFrameUpdates;
-        ILBFramebufferHandle framebuffer = nullptr;
-        if (ILBGetUpdateFramebuffer(update, &framebuffer) == ILB_ST_SUCCESS && framebuffer != nullptr)
-        {
-            DAVA::int32 frameWidth = 0;
-            DAVA::int32 frameHeight = 0;
-            // Beast's own render window reports a different size (640x480, 660x606)
-            // than the camera target this session created. Those frames come from a
-            // camera that is not ours, so they are dropped instead of shown at the
-            // wrong size.
-            if (ILBGetResolution(framebuffer, &frameWidth, &frameHeight) == ILB_ST_SUCCESS && frameWidth > 0 && frameHeight > 0 && (frameWidth != liveViewWidth || frameHeight != liveViewHeight))
-            {
-                ++liveMismatchedFrames;
-                if (liveMismatchedFrames <= 3 || (liveMismatchedFrames % 100) == 0)
-                {
-                    DAVA::Logger::Info("[BeastManager] live camera: dropped %d frame(s) total, latest %dx%d, the session camera target is %dx%d",
-                                       static_cast<DAVA::int32>(liveMismatchedFrames), frameWidth, frameHeight, liveViewWidth, liveViewHeight);
-                }
-                return;
-            }
-
-            ReadLiveFramebuffer(framebuffer, liveCameraImage, liveCameraImageWidth, liveCameraImageHeight);
-            liveCameraImageChanged = liveCameraImageWidth > 0;
-        }
-        return;
-    }
-
-    if (type != ILB_UT_UPDATE_TEXTURE)
-    {
-        return;
-    }
-
-    ILBFramebufferHandle framebuffer = nullptr;
-    if (ILBGetUpdateFramebuffer(update, &framebuffer) != ILB_ST_SUCCESS || framebuffer == nullptr)
-    {
-        return;
-    }
-
-    ILBTargetEntityHandle entity = nullptr;
-    if (ILBGetFramebufferTargetEntity(framebuffer, &entity) != ILB_ST_SUCCESS || entity == nullptr)
-    {
-        return;
-    }
-
-    ILBStringHandle nameHandle = nullptr;
-    if (ILBGetTargetEntityInstance(entity, &nameHandle) != ILB_ST_SUCCESS || nameHandle == nullptr)
-    {
-        return;
-    }
-
-    const DAVA::String name = ConvertBeastString(nameHandle);
-    auto it = liveTargetIndexByName.find(name);
-    if (it == liveTargetIndexByName.end())
-    {
-        // the instance name Beast reports must be the one we created it with;
-        // if it is not, say so instead of silently dropping every frame
-        if (unmatchedLiveNames.size() < 8 && unmatchedLiveNames.insert(name).second)
-        {
-            DAVA::Logger::Warning("[BeastManager] live update for unknown instance '%s'", name.c_str());
-        }
-        return;
-    }
-
-    ++liveTextureUpdates;
-
-    LiveTargetImage& entry = liveTargets[static_cast<size_t>(it->second)];
-    ReadLiveFramebuffer(framebuffer, entry.rgba, entry.width, entry.height);
-}
-
-void BeastManager::UpdateLive()
-{
-    if (job == nullptr)
-    {
-        return;
-    }
-
-    // Objects moved in the editor are re-pushed here: Beast holds a snapshot.
-    SyncLiveInstances();
-
-    // 0 ms: the pump has to return so the editor keeps its frame rate
-    ILBWaitJobDone(job, 0);
-
-    // Drain the queue. Bounded per tick so a fast renderer cannot starve the UI.
-    DAVA::int32 drained = 0;
-    for (;;)
-    {
-        ILBJobUpdateHandle update = nullptr;
-        ILBBool hasUpdate = 0;
-        const ILBStatus pumpStatus = ILBGetJobUpdate(job, &hasUpdate, &update);
-        liveLastPumpStatus = static_cast<DAVA::int32>(pumpStatus);
-        if (pumpStatus != ILB_ST_SUCCESS || hasUpdate == 0 || update == nullptr)
-        {
-            break;
-        }
-
-        ReadLiveUpdate(update);
-        ILBDestroyUpdate(update);
-        ++liveUpdatesSinceReport;
-
-        if (++drained >= LIVE_UPDATES_PER_TICK)
-        {
-            break;
-        }
-    }
-
-    // say something while nothing arrives: "0 frames" with no explanation is
-    // indistinguishable from a hang
-    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const DAVA::float64 now = static_cast<DAVA::float64>(nowMs) / 1000.0;
-    if (liveLastReportTime == 0.0)
-    {
-        liveLastReportTime = now;
-    }
-    if (now - liveLastReportTime >= 10.0)
-    {
-        ILBBool isRunning = 0;
-        ILBIsJobRunning(job, &isRunning);
-        // ILBJobHasNewProgress is bake-job only: on a live Ernst job it answers
-        // "Tried to get progress on a job not supporting it" (151 lines per run).
-        // The camera and lightmap counters below say the same thing, truthfully.
-        DAVA::Logger::Info("[BeastManager] live: %d update(s) in the last %.0f s (%d camera, %d lightmap), %d camera push(es), %d target(s), job running=%d, activity=%d, progress=%d, targets with image=%d, last pump status=%d",
-                           liveUpdatesSinceReport, now - liveLastReportTime,
-                           liveCameraFrameUpdates, liveTextureUpdates, liveCameraPushes,
-                           static_cast<DAVA::int32>(liveTargets.size()), static_cast<DAVA::int32>(isRunning),
-                           CountLiveFramesWithImage(), liveLastPumpStatus);
-        liveCameraFrameUpdates = 0;
-        liveTextureUpdates = 0;
-        liveCameraPushes = 0;
-
-        // A silent session plus a failing pump is not "slow", it is broken, and
-        // Beast's own log says why.
-        if (liveUpdatesSinceReport == 0 && liveLastPumpStatus != ILB_ST_SUCCESS)
-        {
-            BeastManagerDetails::LogILBFailure("ILBGetJobUpdate (live)", static_cast<ILBStatus>(liveLastPumpStatus));
-        }
-        liveUpdatesSinceReport = 0;
-        liveLastReportTime = now;
-    }
-
-    ILBBool running = 0;
-    if (ILBIsJobRunning(job, &running) == ILB_ST_SUCCESS && running == 0 && !livePaused)
-    {
-        // A live session has no natural end: if it stopped, it crashed or was
-        // closed. Report it instead of pretending the view is still live.
-        ILBJobStatus jobStatus = ILB_JS_OTHER_ERROR;
-        if (ILBGetJobResult(job, &jobStatus) == ILB_ST_SUCCESS && jobStatus == ILB_JS_SUCCESS)
-        {
-            liveErrorText = "the live session ended";
-        }
-        else
-        {
-            liveErrorText = DAVA::Format("the live session ended with status %d", static_cast<DAVA::int32>(jobStatus));
-            BeastManagerDetails::LogBeastRendererErrors(beastInfoLogPath);
-            // A fatal error inside Ernst writes a minidump next to the job. Say
-            // where it is instead of leaving the user to hunt for it.
-            LogMinidumpLocation();
-        }
-
-        DAVA::Logger::Error("[BeastManager] %s", liveErrorText.c_str());
-        liveError = true;
-        state = STATE_FAILED;
-    }
-}
-
-void BeastManager::StopLive()
-{
-    liveTrackedInstances.clear();
-    if (job != nullptr)
-    {
-        ILBCancelJob(job);
-
-        for (DAVA::int32 i = 0; i < 500; ++i)
-        {
-            ILBBool running = 0;
-            if (ILBIsJobRunning(job, &running) != ILB_ST_SUCCESS || running == 0)
-            {
-                break;
-            }
-            DAVA::Thread::Sleep(10);
-        }
-        job = nullptr;
-    }
-
-    // job lifetime owns its targets
-    liveTextureTarget = nullptr;
-    liveCameraTarget = nullptr;
-
-    if (state == STATE_GENERATING)
-    {
-        state = STATE_DONE;
-    }
-}
-
-void BeastManager::SetLivePaused(bool paused)
-{
-    livePaused = paused;
-
-    // an Ernst property only exists on a live job: poking a bake job with it
-    // returns "job not supporting it"
-    if (job != nullptr && mode == eBeastMode::MODE_LIVE)
-    {
-        const ILBStatus status = ILBSetErnstRunningState(job, paused ? ILB_ERS_PAUSE : ILB_ERS_RUN);
-        if (status != ILB_ST_SUCCESS)
-        {
-            ILBStringHandle extendedError = nullptr;
-            ILBGetExtendErrorInformation(&extendedError);
-            DAVA::Logger::Error("[BeastManager] ILBSetErnstRunningState(%s) failed: %s",
-                                paused ? "pause" : "run", ConvertBeastString(extendedError).c_str());
-        }
-    }
-}
-
-bool BeastManager::IsLivePaused() const
-{
-    return livePaused;
-}
-
-bool BeastManager::IsLiveRunning() const
-{
-    if (job == nullptr || liveError)
-    {
-        return false;
-    }
-
-    ILBBool running = 0;
-    return ILBIsJobRunning(const_cast<ILBJobHandle>(job), &running) == ILB_ST_SUCCESS && running != 0;
-}
-
-bool BeastManager::HasLiveError() const
-{
-    return liveError;
-}
-
-const DAVA::String& BeastManager::GetLiveError() const
-{
-    return liveErrorText;
-}
-
-bool BeastManager::GetLiveCameraImage(DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height) const
-{
-    if (liveCameraImage.empty() || liveCameraImageWidth <= 0 || liveCameraImageHeight <= 0)
-    {
-        return false;
-    }
-
-    rgba = liveCameraImage;
-    width = liveCameraImageWidth;
-    height = liveCameraImageHeight;
-    return true;
-}
-
-bool BeastManager::TakeLiveCameraImageChanged()
-{
-    const bool changed = liveCameraImageChanged;
-    liveCameraImageChanged = false;
-    return changed;
-}
-
-DAVA::int32 BeastManager::GetLiveTargetCount() const
-{
-    return static_cast<DAVA::int32>(liveTargets.size());
-}
-
-static DAVA::Matrix4 LiveWorldTransform(DAVA::Entity* entity)
-{
-    // dava.revanced keeps transforms on TransformComponent; DAVA::Entity has no
-    // GetWorldTransform() in this fork.
-    if (entity == nullptr)
-    {
-        return DAVA::Matrix4::IDENTITY;
-    }
-    const DAVA::TransformComponent* transformComponent = entity->GetComponent<DAVA::TransformComponent>();
-    if (transformComponent == nullptr)
-    {
-        return DAVA::Matrix4::IDENTITY;
-    }
-    return DAVA::TransformUtils::ToMatrix(transformComponent->GetWorldTransform());
-}
-
-void BeastManager::SetLiveBakeEntireLevel(bool entireLevel)
-{
-    liveBakeEntireLevel = entireLevel;
-}
-
-void BeastManager::RegisterLiveInstance(DAVA::Entity* entity, ILBInstanceHandle instance)
-{
-    if ((entity == nullptr) || (instance == nullptr) || (liveTrackedInstances.size() >= 4096))
-    {
-        return;
-    }
-
-    LiveTrackedInstance tracked;
-    tracked.entity = entity;
-    tracked.instance = instance;
-    tracked.lastTransform = LiveWorldTransform(entity);
-    liveTrackedInstances.push_back(tracked);
-}
-
-void BeastManager::SyncLiveInstances()
-{
-    if ((mode != MODE_LIVE) || liveTrackedInstances.empty())
-    {
-        return;
-    }
-
-    // Every tick would be 1000 matrix compares at 30 Hz; every 4th is 7 Hz of object
-    // moves, which is smoother than the drag itself.
-    if (++liveSyncCounter % 4 != 0)
-    {
-        return;
-    }
-
-    DAVA::uint32 moved = 0;
-    for (LiveTrackedInstance& tracked : liveTrackedInstances)
-    {
-        if (tracked.entity == nullptr || tracked.instance == nullptr)
-        {
-            continue;
-        }
-
-        const DAVA::Matrix4 world = LiveWorldTransform(tracked.entity);
-        if (memcmp(world._data, tracked.lastTransform._data, sizeof(world._data)) == 0)
-        {
-            continue;
-        }
-
-        const ILBMatrix4x4 beastTransform = ConvertDavaMatrix(world);
-        const ILBStatus status = ILBSetInstanceTransform(tracked.instance, &beastTransform);
-        if (status != ILB_ST_SUCCESS)
-        {
-            continue;
-        }
-
-        tracked.lastTransform = world;
-        ++moved;
-    }
-
-    if (moved > 0)
-    {
-        DAVA::Logger::Info("[BeastManager] live: pushed %d moved instance transform(s)", static_cast<DAVA::int32>(moved));
-    }
-}
-
-DAVA::int32 BeastManager::GetLiveDroppedFrameCount() const
-{
-    return static_cast<DAVA::int32>(liveMismatchedFrames);
-}
-
-const DAVA::String& BeastManager::GetLiveTargetName(DAVA::int32 index) const
-{
-    static const DAVA::String empty;
-    if (index < 0 || index >= static_cast<DAVA::int32>(liveTargets.size()))
-    {
-        return empty;
-    }
-    return liveTargets[static_cast<size_t>(index)].name;
-}
-
-bool BeastManager::GetLiveTargetImage(DAVA::int32 index, DAVA::Vector<DAVA::uint8>& rgba, DAVA::int32& width, DAVA::int32& height) const
-{
-    if (index < 0 || index >= static_cast<DAVA::int32>(liveTargets.size()))
-    {
-        return false;
-    }
-
-    const LiveTargetImage& entry = liveTargets[static_cast<size_t>(index)];
-    if (entry.rgba.empty())
-    {
-        return false;
-    }
-
-    rgba = entry.rgba;
-    width = entry.width;
-    height = entry.height;
-    return true;
-}
 
 bool BeastManager::HasProducedOutput() const
 {

@@ -36,14 +36,6 @@ class SceneParser
 public:
     // Decoding a shipped texture and writing it out again costs real time on a big
     // map, so it can be switched off while diagnosing something else.
-    // A live preview only needs what the camera can see: uploading the whole map
-    // costs Beast 34 s of mesh loading and 42 s of acceleration structures.
-    void SetLiveCullCenter(const DAVA::Vector3& center, DAVA::float32 radius)
-    {
-        liveCullCenter = center;
-        liveCullRadius = radius;
-    }
-
     // 0 keeps the shipped resolution. 512 quarters the PNG that Beast then has to
     // decode on every session start.
     void SetTextureMaxSize(DAVA::int32 size)
@@ -138,8 +130,6 @@ private:
     DAVA::uint32 materialsWithoutAlbedo = 0;
     DAVA::uint32 skippedWithoutMaterial = 0;
     DAVA::int32 textureMaxSize = 512;
-    DAVA::Vector3 liveCullCenter;
-    DAVA::float32 liveCullRadius = 0.0f;
     bool entitiesParsed = false;
     bool shouldCancel = false;
     DAVA::int32 skippedBatchCount = 0;

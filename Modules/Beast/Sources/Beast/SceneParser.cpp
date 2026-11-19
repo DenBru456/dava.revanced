@@ -44,14 +44,20 @@ static const DAVA::int32 BEAST_DEFAULT_LANDSCAPE_LIGHTMAP_SIZE = 512;
 // for everything is what made a 30 m wall and a crate share 64 px, which is mush on the wall
 // and pure waste on the crate. Pick the rung of the ladder that keeps texel density roughly
 // constant instead, and let an explicit material value win over it.
-static const DAVA::int32 BEAST_LIGHTMAP_SIZE_LADDER[] = { 16, 32, 64, 128, 256, 512 };
+static const DAVA::int32 BEAST_LIGHTMAP_SIZE_LADDER[] = { 16, 32, 64, 128, 256, 512, 1024, 2048 };
 // 9 texels per metre. Measured against the shipped atlas after a full bake at 12: ours came out
 // 512 x22 / 256 x35 / 128 x230 / 64 x472 / 32 x98 / 16 x0 = 13.86M texels over 4 pages, while
 // the map ships 512 x12 / 256 x37 / 128 x90 / 64 x421 / 32 x293 / 16 x159 = 9.11M over 3. The
 // surplus is all in the middle of the ladder - 140 extra 128 px tiles and not one 16 px tile -
 // which is a density that is too high, not a packer that is too loose (page fill was 96/94/94).
 // 9 texels per metre brings 13.86M down to about 7.8M and lets small props reach 16 px.
-static const DAVA::float32 BEAST_LIGHTMAP_TEXELS_PER_METER = 9.0f;
+// 18 texels per metre, not 9. At 9 a 12 x 8 m building lands on sqrt(12*8)*9 = 88, i.e. the
+// 128 rung, for every face it has, and a 12 cm shadow edge cannot be anything but a staircase:
+// measured on that tile (entity 300, r_bld703.sc2) the mean neighbour step is 4.89 levels against
+// 0.74 on the 512 tower tile, and the user's word for it is "the wall edges are not smooth". The
+// ladder also stops at 512, so nothing bigger could have been asked for. Density wins over the
+// atlas budget here: the surplus lands on the objects a player walks up to.
+static const DAVA::float32 BEAST_LIGHTMAP_TEXELS_PER_METER = 18.0f;
 
 // How hot the bake runs. Beast reads the light level from the "editor.intensity" custom property
 // (BeastLight falls back to 1.0), NOT from Light::GetIntensity, so the 300 in the scene is not what
@@ -243,7 +249,10 @@ static DAVA::int32 PickLightmapSizeFromGeometry(DAVA::RenderBatch* batch, const 
     }
 
     const DAVA::float32 linearSize = std::sqrt(extents[0] * extents[1]);
-    return SnapToLightmapLadder(static_cast<DAVA::int32>(std::ceil(linearSize * BEAST_LIGHTMAP_TEXELS_PER_METER)));
+    const DAVA::int32 size = SnapToLightmapLadder(static_cast<DAVA::int32>(std::ceil(linearSize * BEAST_LIGHTMAP_TEXELS_PER_METER)));
+    DAVA::Logger::Info("[SceneParser] lightmap size: %.1f x %.1f x %.1f m -> %d px (%.1f texels/m over %.1f m of surface)",
+                       extents[0], extents[1], extents[2], size, BEAST_LIGHTMAP_TEXELS_PER_METER, linearSize);
+    return size;
 }
 
 // dava.revanced compatibility: entity transforms live on TransformComponent
@@ -307,6 +316,68 @@ bool NameLooksLikeWater(const DAVA::String& name)
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return lower.find("water") != DAVA::String::npos || lower.find("sea_surface") != DAVA::String::npos
     || lower.find("seasurface") != DAVA::String::npos || lower.find("_sea") != DAVA::String::npos;
+}
+
+// Beast has no alpha: a leaf card, a billboard plane or a glass pane reaches the ray tracer as a
+// solid rectangle and paints a hard rectangular shadow onto whatever stands behind it. In the
+// scene file these arrive with instance names like "tree_02_lod1_planes" or "tree_02-leaf" while
+// the opaque parts of the same tree are "3_trunk-trunk", so the token list has to be specific.
+// A DAVA::FastName is a pointer to an interned string, and a default-constructed one is
+// nullptr, not "". NMaterial::GetEffectiveFXName() returns exactly that for every material that
+// carries no FX name of its own, so passing its c_str() to a function that takes a DAVA::String
+// constructs the string from a null pointer and calls strlen(nullptr) inside ucrtbase. That was
+// the crash after the terrain: the first prop whose material has no FX name.
+static DAVA::String FastNameString(const DAVA::FastName& name)
+{
+    return name.IsValid() ? DAVA::String(name.c_str()) : DAVA::String();
+}
+
+bool NameLooksLikeAlphaCard(const DAVA::String& name)
+{
+    static const char* tokens[] = {
+        "leaf", "leaves", "foliage", "planes", "billboard", "grass", "bush", "branch",
+        "glass", "decal", "sign", "shadow", "glow", "flare", "smoke", "dust", "sprite",
+        "alpha", "cutout", "fade", "transparent", "hole", "lattice"
+    };
+    DAVA::String lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* token : tokens)
+    {
+        if (lower.find(token) != DAVA::String::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+DAVA::uint32 gSkippedAlphaBatches = 0;
+DAVA::uint32 gLoggedAlphaBatches = 0;
+
+// Decided from names only: the instance names are opaque ("Instance-31203") while the shader
+// behind them is not, so the token list is checked against the material, its parents, the
+// effective FX name and the entity name.
+bool IsAlphaCardMaterial(DAVA::NMaterial* material, const DAVA::Entity* entity)
+{
+    if (material == nullptr)
+    {
+        return false;
+    }
+    if (NameLooksLikeAlphaCard(FastNameString(material->GetMaterialName()))
+        || NameLooksLikeAlphaCard(FastNameString(material->GetEffectiveFXName())))
+    {
+        return true;
+    }
+    DAVA::NMaterial* parent = material->GetParent();
+    for (DAVA::int32 depth = 0; parent != nullptr && depth < 6; ++depth, parent = parent->GetParent())
+    {
+        if (NameLooksLikeAlphaCard(FastNameString(parent->GetMaterialName()))
+            || NameLooksLikeAlphaCard(FastNameString(parent->GetEffectiveFXName())))
+        {
+            return true;
+        }
+    }
+    return (entity != nullptr) && NameLooksLikeAlphaCard(entity->GetName().c_str());
 }
 }
 
@@ -417,6 +488,8 @@ void SceneParser::StartParsing()
     landscapeTextureProcessed = false;
     dumpedTextureCount = 0;
     skippedWaterBatches = 0;
+    gSkippedAlphaBatches = 0;
+    gLoggedAlphaBatches = 0;
     landscapeColorReady = false;
     directionalLightEntity = nullptr;
 
@@ -462,18 +535,18 @@ void SceneParser::ParseNodeRecursive(DAVA::Entity* node, DAVA::uint32 depth)
         eventPump();
     }
 
-    DAVA::RenderComponent* renderComponent = GetRenderComponent(node);
-
-    // Live preview radius: skip what the camera cannot see. Children are still
-    // walked because entities are not guaranteed to be grouped spatially.
-    bool culled = false;
-    if ((renderComponent != nullptr) && (liveCullRadius > 0.0f))
+    // A crash after the terrain says nothing about how far the walk got. One line per hundred
+    // nodes turns the last line of the log into a position in the scene.
+    static DAVA::uint32 nodesWalked = 0;
+    if (0 == (++nodesWalked % 100))
     {
-        const DAVA::Vector3 position = GetEntityWorldTransform(node).GetTranslationVector();
-        culled = (position - liveCullCenter).SquareLength() > (liveCullRadius * liveCullRadius);
+        DAVA::Logger::Info("[SceneParser] walking: %u nodes, at '%s' (depth %u)",
+                           nodesWalked, node->GetName().c_str(), depth);
     }
 
-    if (renderComponent && !culled)
+    DAVA::RenderComponent* renderComponent = GetRenderComponent(node);
+
+    if (renderComponent)
     {
         DAVA::RenderObject* rObject = renderComponent->GetRenderObject();
         if (rObject && (rObject->GetType() == DAVA::RenderObject::TYPE_MESH || rObject->GetType() == DAVA::RenderObject::TYPE_SPEED_TREE))
@@ -517,6 +590,11 @@ void SceneParser::ReportSkippedWater()
         DAVA::Logger::Info("[SceneParser] skipped %u water surface batch(es): Beast has no transparent pass, they drew as checkerboard planes",
                            skippedWaterBatches);
     }
+    if (gSkippedAlphaBatches > 0)
+    {
+        DAVA::Logger::Info("[SceneParser] skipped %u alpha card batch(es): Beast traces them as solid rectangles and their shadow is the hard rectangular patch on nearby walls",
+                           gSkippedAlphaBatches);
+    }
 }
 
 void SceneParser::FinishParsingLandscape()
@@ -541,7 +619,7 @@ bool SceneParser::IsWaterLikeMaterial(DAVA::NMaterial* material, const DAVA::Ent
     {
         return false;
     }
-    if (NameLooksLikeWater(material->GetMaterialName().c_str()))
+    if (NameLooksLikeWater(FastNameString(material->GetMaterialName())))
     {
         return true;
     }
@@ -553,7 +631,7 @@ bool SceneParser::IsWaterLikeMaterial(DAVA::NMaterial* material, const DAVA::Ent
         DAVA::NMaterial* parent = material->GetParent();
         for (DAVA::int32 depth = 0; parent != nullptr && depth < 4; ++depth, parent = parent->GetParent())
         {
-            if (NameLooksLikeWater(parent->GetMaterialName().c_str()))
+            if (NameLooksLikeWater(FastNameString(parent->GetMaterialName())))
             {
                 return true;
             }
@@ -587,6 +665,22 @@ void SceneParser::ParseNodeMaterials(DAVA::RenderComponent* renderComponent)
         if (IsWaterLikeMaterial(material, entity))
         {
             ++skippedWaterBatches;
+            continue;
+        }
+
+        // An alpha card is a rectangle to Beast: solid, opaque and shadow casting. One leaning
+        // against a wall paints exactly the hard rectangular patch that looks like a phantom
+        // shadow of nothing. Name it in the log so the skip is auditable.
+        if (IsAlphaCardMaterial(material, entity))
+        {
+            ++gSkippedAlphaBatches;
+            if (gLoggedAlphaBatches < 12)
+            {
+                ++gLoggedAlphaBatches;
+                DAVA::Logger::Info("[SceneParser] alpha card '%s' (%s) on '%s' excluded from the bake",
+                                   FastNameString(material->GetMaterialName()).c_str(), FastNameString(material->GetEffectiveFXName()).c_str(),
+                                   (entity != nullptr) ? entity->GetName().c_str() : "?");
+            }
             continue;
         }
 
@@ -771,8 +865,7 @@ void SceneParser::ParseNodeMeshes(DAVA::RenderComponent* renderComponent)
     DAVA::Matrix4 entityTransform = GetEntityWorldTransform(entity);
     entityTransform.GetInverse(entityInverseTransform);
 
-    bool lightmapModeUsed = (beastManager->GetMode() == eBeastMode::MODE_LIGHTMAPS) || (beastManager->GetMode() == eBeastMode::MODE_PREVIEW)
-                            || (beastManager->GetMode() == eBeastMode::MODE_LIVE);
+    bool lightmapModeUsed = (beastManager->GetMode() == eBeastMode::MODE_LIGHTMAPS) || (beastManager->GetMode() == eBeastMode::MODE_PREVIEW);
     bool shModeUsed = (beastManager->GetMode() == eBeastMode::MODE_SPHERICAL_HARMONICS);
 
     bool isSpeedTree = ro->GetType() == DAVA::RenderObject::TYPE_SPEED_TREE;
@@ -838,12 +931,12 @@ void SceneParser::ParseNodeMeshes(DAVA::RenderComponent* renderComponent)
                 {
                     DAVA::Logger::Info("[SceneParser] batch %d has FLAG_ILLUMINATION_USED off, baking it anyway (material '%s')",
                                        static_cast<DAVA::int32>(ri),
-                                       DAVA::String(material->GetMaterialName().c_str()).c_str());
+                                       FastNameString(material->GetMaterialName()).c_str());
                 }
                 ++loggedUnlitBatchCount;
             }
 
-            DAVA::String fxNameString(material->GetEffectiveFXName().c_str());
+            DAVA::String fxNameString = FastNameString(material->GetEffectiveFXName());
             std::transform(fxNameString.begin(), fxNameString.end(), fxNameString.begin(), ::tolower);
 
             bool skyMaterial = fxNameString.find("skyobject") != DAVA::String::npos;
@@ -911,12 +1004,6 @@ void SceneParser::ParseNodeMeshes(DAVA::RenderComponent* renderComponent)
                 {
                     beastManager->RegisterLightmapUVRect(batch, lightmapUVOffset, lightmapUVSize, 1);
                 }
-            }
-            if ((beastMeshInstance != nullptr) && (beastManager->GetMode() == eBeastMode::MODE_LIVE))
-            {
-                // The scene handed to Beast is a snapshot: without this, moving an
-                // object in the editor changes nothing in the live view.
-                beastManager->RegisterLiveInstance(entity, beastMeshInstance->GetILBMeshInstance());
             }
             beastMeshInstance->SetLodLevel(lodLevel);
             // The FX name test is a heuristic for the Blitz-era material set. With
@@ -1034,8 +1121,8 @@ void SceneParser::LogBatchSkipped(DAVA::int32 batchIndex, const char* reason, DA
     // Data/Materials only fills the gaps
     DAVA::Logger::Info("[SceneParser] batch %d skipped: %s (material '%s', shader '%s', illuminationUsed %d)",
                        batchIndex, reason,
-                       DAVA::String(material->GetMaterialName().c_str()).c_str(),
-                       DAVA::String(material->GetEffectiveFXName().c_str()).c_str(),
+                       FastNameString(material->GetMaterialName()).c_str(),
+                       FastNameString(material->GetEffectiveFXName()).c_str(),
                        material->GetEffectiveFlagValue(DAVA::NMaterialFlagName::FLAG_ILLUMINATION_USED));
 }
 
@@ -1119,7 +1206,7 @@ void SceneParser::ParseLightComponent(DAVA::LightComponent* lightComponent)
         {
             DAVA::Logger::Info("[SceneParser] light '%s' bake intensity: editor.intensity = %.3f",
                                lightComponent->GetEntity()->GetName().c_str(),
-                               lightProps->GetFloat("editor.intensity", 1.0f));
+                               BeastLight::ReadFloatProperty(lightComponent->GetEntity(), "editor.intensity", 1.0f));
         }
 
         if (light->GetType() == DAVA::Light::TYPE_DIRECTIONAL)
@@ -1168,7 +1255,6 @@ void SceneParser::ParseLightComponent(DAVA::LightComponent* lightComponent)
             // back to intensity 1.0 and shadows on. Say so, because "the scene has no
             // editor.staticlight.* keys" is the normal shape of a shipped .sc2 and it explains
             // both the light level and the lack of shadow-angle tuning in the result.
-            if (beastManager->GetMode() != eBeastMode::MODE_LIVE)
             {
                 DAVA::KeyedArchive* properties = DAVA::GetCustomPropertiesArchieve(lightComponent->GetEntity());
                 if (properties == nullptr || !properties->IsKeyExists("editor.staticlight.enable"))
@@ -1209,7 +1295,7 @@ void SceneParser::ParseLightComponent(DAVA::LightComponent* lightComponent)
             const ILBMatrix4x4 fillMatrix = ConvertDavaMatrix(identity);
             const ILBLinearRGB fillRGB(0.617f, 0.849f, 1.000f);
             const DAVA::float32 fillIntensity = (props != nullptr)
-            ? props->GetFloat("editor.staticlight.ambientintensity", 0.05f)
+            ? BeastLight::ReadFloatProperty(lightComponent->GetEntity(), "editor.staticlight.ambientintensity", 0.05f)
             : 0.05f;
             ILBLightHandle fillHandle = nullptr;
             if (fillIntensity <= 1.0e-4f)
@@ -1237,13 +1323,17 @@ void SceneParser::ParseLightComponent(DAVA::LightComponent* lightComponent)
             const ILBMatrix4x4 ambientMatrix = ConvertDavaMatrix(identity);
             const ILBLinearRGB ambientRGB(ambientColor.r, ambientColor.g, ambientColor.b);
             const DAVA::float32 ambientIntensity = (props != nullptr)
-            ? props->GetFloat("editor.staticlight.ambientintensity", 0.05f)
+            ? BeastLight::ReadFloatProperty(lightComponent->GetEntity(), "editor.staticlight.ambientintensity", 0.05f)
             : 0.05f;
-            const DAVA::String ambientName = DAVA::Format("%s_ambient", lightComponent->GetEntity()->GetName().c_str());
+            // Two light entities in a shipped scene are BOTH called "Light1" (the map has a static
+            // one and a dynamic one), so the "<entity>_ambient" form collided and Beast answered
+            // ILB_ST_DUPLICATE_NAME (status 3): the second fill was silently never in the bake.
+            static DAVA::uint32 ambientSerial = 0;
+            const DAVA::String ambientName = DAVA::Format("%s_ambient_%u", lightComponent->GetEntity()->GetName().c_str(), ++ambientSerial);
             ILBLightHandle ambientHandle = nullptr;
-            if (ambientIntensity <= 1.0e-4f)
+            if ((ambientIntensity <= 1.0e-4f) || ((ambientColor.r + ambientColor.g + ambientColor.b) <= 1.0e-4f))
             {
-                DAVA::Logger::Info("[SceneParser] ambient %.3f,%.3f,%.3f from light '%s' stays off (editor.staticlight.ambientintensity 0)",
+                DAVA::Logger::Info("[SceneParser] ambient %.3f,%.3f,%.3f from light '%s' stays off (zero colour or intensity)",
                                    ambientColor.r, ambientColor.g, ambientColor.b, lightComponent->GetEntity()->GetName().c_str());
             }
             else
@@ -1674,23 +1764,62 @@ void SceneParser::ContinueParsingLandscape(DAVA::Entity* node, DAVA::Landscape* 
                            minimum.x, maximum.x, minimum.y, maximum.y, maximum.y - minimum.y, minimum.z, maximum.z);
     }
 
+    // The terrain is the largest thing handed to Beast (263169 vertices, 1572864 indices on a
+    // 600 m map) and it is the first geometry call of the session. Validate the index buffer
+    // before Beast copies 6 MB of it, and bracket the upload with two log lines so a crash inside
+    // Beast says which call it died in.
+    {
+        DAVA::int32 maxIndex = -1;
+        DAVA::int32 badIndex = -1;
+        for (DAVA::size_type i = 0; i < geometry.indices.size(); ++i)
+        {
+            const DAVA::int32 index = geometry.indices[i];
+            if (index < 0)
+            {
+                badIndex = static_cast<DAVA::int32>(i);
+                break;
+            }
+            maxIndex = DAVA::Max(maxIndex, index);
+        }
+        const DAVA::int32 vertexCount = static_cast<DAVA::int32>(geometry.vertices.size());
+        if ((badIndex >= 0) || (maxIndex >= vertexCount))
+        {
+            DAVA::Logger::Error("[SceneParser] landscape index buffer is invalid (first bad index %d, max %d, vertices %d): the terrain is left out of the bake",
+                                badIndex, maxIndex, vertexCount);
+            FinishParsingLandscape();
+            return;
+        }
+        DAVA::Logger::Info("[SceneParser] landscape index buffer: %d indices, max %d of %d vertices, material '%s' (%d normals)",
+                           static_cast<DAVA::int32>(geometry.indices.size()), maxIndex, vertexCount,
+                           (landscapeMaterial != nullptr) ? landscapeMaterial->GetName().c_str() : "none",
+                           static_cast<DAVA::int32>(geometry.normals.size()));
+    }
+
     auto name = BeastMeshInstance::PointerToString(landscape);
     BeastMesh* beastMesh = BeastMesh::CreateWithName(name, beastManager);
+    DAVA::Logger::Info("[SceneParser] landscape mesh: sending %d vertices to Beast as '%s'",
+                       static_cast<DAVA::int32>(geometry.vertices.size()), name.c_str());
     beastMesh->InitWithLandscape(&geometry, landscapeMaterial);
+    DAVA::Logger::Info("[SceneParser] landscape mesh: uploaded");
 
     BeastMeshInstance* beastMeshInstance = BeastMeshInstance::CreateWithName(name, beastManager);
+    DAVA::Logger::Info("[SceneParser] landscape instance: created");
     beastMeshInstance->InitWithLandscape(landscape, beastMesh);
+    DAVA::Logger::Info("[SceneParser] landscape instance: attached to Beast");
     beastMeshInstance->SetLodLevel(0);
 
     bool landscapeLightmap = true;
     if (beastManager->GetLightmapSelection() == BeastManager::eLightmapSelection::Flagged)
     {
-        landscapeLightmap = davaLandscapeMaterial->GetEffectiveFlagValue(DAVA::NMaterialFlagName::FLAG_ILLUMINATION_USED) != 0;
+        landscapeLightmap = (davaLandscapeMaterial != nullptr)
+        && (davaLandscapeMaterial->GetEffectiveFlagValue(DAVA::NMaterialFlagName::FLAG_ILLUMINATION_USED) != 0);
     }
 
-    if (landscapeLightmap && (beastManager->GetMode() == eBeastMode::MODE_LIGHTMAPS || beastManager->GetMode() == eBeastMode::MODE_PREVIEW || beastManager->GetMode() == eBeastMode::MODE_LIVE))
+    if (landscapeLightmap && (beastManager->GetMode() == eBeastMode::MODE_LIGHTMAPS || beastManager->GetMode() == eBeastMode::MODE_PREVIEW))
     {
-        const DAVA::float32* lightmapSize = davaLandscapeMaterial->GetEffectivePropValue(DAVA::NMaterialParamName::PARAM_LIGHTMAP_SIZE);
+        const DAVA::float32* lightmapSize = (davaLandscapeMaterial != nullptr)
+        ? davaLandscapeMaterial->GetEffectivePropValue(DAVA::NMaterialParamName::PARAM_LIGHTMAP_SIZE)
+        : nullptr;
         // terrain is one surface spanning the whole map: the shipped maps carry a single
         // 512x512 world-projected terrain lightmap (landscape/wwLm), never a per-tile target
         DAVA::float32 targetLightmapSize = (lightmapSize == nullptr) ? static_cast<DAVA::float32>(BEAST_DEFAULT_LANDSCAPE_LIGHTMAP_SIZE) : *lightmapSize;
@@ -1709,7 +1838,11 @@ void SceneParser::ContinueParsingLandscape(DAVA::Entity* node, DAVA::Landscape* 
         }
     }
 
+    DAVA::Logger::Info("[SceneParser] landscape lightmap target %d, lightmapped %d",
+                       beastMeshInstance->GetLightmapSize(), landscapeLightmap ? 1 : 0);
+
     FinishParsingLandscape();
+    DAVA::Logger::Info("[SceneParser] landscape finished");
 }
 
 void SceneParser::ClearScene()
@@ -1749,7 +1882,7 @@ bool SceneParser::IsMaterialTemplateContainString(DAVA::NMaterial* material, con
     if (material)
     {
         DAVA::String str(_str);
-        DAVA::String fxNameString(material->GetEffectiveFXName().c_str());
+        DAVA::String fxNameString = FastNameString(material->GetEffectiveFXName());
         std::transform(str.begin(), str.end(), str.begin(), ::tolower);
         std::transform(fxNameString.begin(), fxNameString.end(), fxNameString.begin(), ::tolower);
         return fxNameString.find(str) != DAVA::String::npos;

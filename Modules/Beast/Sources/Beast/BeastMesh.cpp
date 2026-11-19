@@ -252,14 +252,24 @@ void BeastMesh::InitWithLandscape(LandscapeGeometry* geometry, BeastMaterial* ma
             // pass must not push it into Beast again.
             return;
         }
+        // One line per step: a crash dump with a null dereference deep in the CRT says nothing
+        // about which call handed over the bad pointer, but the last line here does.
+        DAVA::Logger::Info("[BeastMesh] terrain: mesh begun, filling %d vertices / %d indices (normals %d)",
+                           static_cast<int32>(geometry->vertices.size()), static_cast<int32>(geometry->indices.size()),
+                           static_cast<int32>(geometry->normals.size()));
         AddVertices(geometry);
+        DAVA::Logger::Info("[BeastMesh] terrain: vertex data accepted");
         AddIndices(geometry, material);
+        DAVA::Logger::Info("[BeastMesh] terrain: triangles accepted, material group '%s'",
+                           (material != nullptr) ? material->GetName().c_str() : "none");
 
         BEAST_VERIFY(ILBBeginUVLayer(mesh, CONST_STRING_TO_BEAST_STRING("0")));
         AddUV(geometry);
         BEAST_VERIFY(ILBEndUVLayer(mesh));
+        DAVA::Logger::Info("[BeastMesh] terrain: uv layer accepted");
 
         BEAST_VERIFY(ILBEndMesh(mesh));
+        DAVA::Logger::Info("[BeastMesh] terrain: mesh finished");
     }
 }
 
@@ -269,10 +279,19 @@ void BeastMesh::AddVertices(LandscapeGeometry* geometry)
     DAVA::Vector<ILBVec3> coordData(vertexCount);
     DAVA::Vector<ILBVec3> normalData(vertexCount);
 
+    // A normals vector shorter than the vertex buffer is an out of range read on every vertex and
+    // the one place in this path where a bad pointer can be handed straight to the CRT.
+    if (geometry->normals.size() != vertexCount)
+    {
+        DAVA::Logger::Warning("[BeastMesh] terrain: %d normals for %d vertices, recomputing",
+                              static_cast<int32>(geometry->normals.size()), static_cast<int32>(vertexCount));
+        geometry->ComputeNormals();
+    }
+
     for (DAVA::size_type i = 0; i < vertexCount; ++i)
     {
         const DAVA::Vector3& position = geometry->vertices[i].position;
-        const DAVA::Vector3& normal = geometry->normals[i];
+        const DAVA::Vector3& normal = (i < geometry->normals.size()) ? geometry->normals[i] : DAVA::Vector3(0.0f, 0.0f, 1.0f);
 
         coordData[i] = ILBVec3(position.x, position.y, position.z);
         normalData[i] = ILBVec3(normal.x, normal.y, normal.z);
@@ -348,7 +367,10 @@ DAVA::uint64 BeastMesh::ComputeContentHash(DAVA::PolygonGroup* polygonGroup, DAV
 
     if (material != nullptr)
     {
-        HashString(hash, DAVA::String(material->GetMaterialName().c_str()));
+        // GetMaterialName() is a FastName, and a FastName without a name is a null pointer, not
+        // an empty string: DAVA::String(nullptr) is a strlen(NULL) crash.
+        const DAVA::FastName& materialName = material->GetMaterialName();
+        HashString(hash, materialName.IsValid() ? DAVA::String(materialName.c_str()) : DAVA::String());
     }
 
     const bool hasNormal = (format & DAVA::EVF_NORMAL) != 0;
