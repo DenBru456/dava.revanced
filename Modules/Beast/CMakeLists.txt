@@ -49,7 +49,9 @@ set( MIX_APP_DATA  "Data.beast/bin = ${BeastThirdparty}/bin/ernsttool.xml"
                    )
 
 
-
+if( EXISTS ${CMAKE_CURRENT_LIST_DIR}/beast_license.txt )
+    list( APPEND MIX_APP_DATA "Data.beast = ${CMAKE_CURRENT_LIST_DIR}/beast_license.txt" )
+endif()
 
 setup_main_module()
 
